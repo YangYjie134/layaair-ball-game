@@ -1,0 +1,23 @@
+{
+  "resolution": {
+    "scaleMode": "showall",
+    "alignH": "center"
+  },
+  "physics2D": {
+    "defaultConfig": {
+      "debugDraw": true,
+      "drawAABB": true
+    }
+  },
+  "modules": {
+    "laya.ui": true,
+    "laya.d3": true,
+    "laya.physics2D": true
+  },
+  "addons": {
+    "laya.ui": "ui2"
+  },
+  "splash": {
+    "fit": "center"
+  }
+}

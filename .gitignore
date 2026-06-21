@@ -1,0 +1,12 @@
+.DS_Store
+*.log
+
+node_modules/
+temp/
+library/
+local/
+release/
+
+.vscode/
+
+bin/js/bundles/

@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "module": "es6",
+    "target": "es6",
+    "strict": true,
+    "strictNullChecks": false,
+    "noEmitHelpers": true,
+    "sourceMap": false,
+    "experimentalDecorators": true,
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "ignoreDeprecations": "6.0",
+    "noEmitOnError": false,
+    "paths": {
+      "~/packages/*": [
+        "./library/packages/*"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*"
+  ]
+}
