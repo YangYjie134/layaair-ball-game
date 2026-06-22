@@ -22,6 +22,8 @@ export class ScoreManager {
     private winText: any = null;
     // 是否已经获胜
     private hasWon: boolean = false;
+    // 获胜所需分数
+    private readonly winScore: number = 5;
     // 已经得分过的平台集合（防止重复计分）
     private scoredPlatforms: Set<string> = new Set<string>();
 
@@ -165,7 +167,7 @@ export class ScoreManager {
     // 检查是否满足获胜条件（分数达到5分）
     private checkWin(): void {
         // 如果已经获胜或分数不足5，则不处理
-        if (this.hasWon || this.score < 5) {
+        if (this.hasWon || this.score < this.winScore) {
             return;
         }
 

@@ -51,8 +51,6 @@ export default class BallController extends Laya.Script {
 
     // 游戏初始化，在脚本被激活时调用一次
     onAwake(): void {
-        // 初始化分数管理器
-        ScoreManager.instance.init();
         // 获取当前脚本所属的球体节点
         const ball = this.owner as any;
         if (ball) {
