@@ -31,3 +31,9 @@ src/
 ├─ BallController.ts      # 小球控制逻辑，包括移动、跳跃、死亡复活等
 ├─ ScoreManager.ts        # 得分系统，负责分数显示和平台得分判断
 └─ BackgroundManager.ts   # 使用代码绘制游戏背景
+
+今天是2026.6.23 2：33
+完成 Claude Code 接入，并通过两个小重构验证流程：
+1. 删除 BallController 中重复的 ScoreManager 初始化；
+2. 将 ScoreManager 中的胜利分数 5 提取为 winScore；
+同时理解了自定义平台物理中的落地检测和离地检测逻辑。
