@@ -130,7 +130,7 @@ export default class BallController extends Laya.Script {
         // ── 步骤 3：跳跃逻辑 ──
         // prevJumpKey 用来保证按住 W 时只跳一次，不会每一帧连续起跳。
         // 检测跳跃（按下W、之前未按下、且在地面上）
-        if (jump && !this.prevJumpKey && this.onGround) {
+        if (jump && !this.prevJumpKey && this.onGround && !ScoreManager.instance.isWon()) {
             // 游戏开始：只有从 Ground 主动起跳才算正式开始
             // 此处 groundPlatform 反映的是上一帧落地结果（重置发生在跳跃判断之后）
             if (!this.gameStarted && this.groundPlatform?.name === "Ground") {
@@ -295,7 +295,7 @@ export default class BallController extends Laya.Script {
     // 检查球是否掉出屏幕
     private checkDeath(): void {
         // 如果球Y位置超出屏幕下方100像素，则重新生成
-        if (this.centerY > Laya.stage.height + 100) {
+        if (this.centerY > Laya.stage.height + 100 && !ScoreManager.instance.isWon()) {
             this.respawn();
         }
     }
