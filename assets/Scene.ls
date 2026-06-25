@@ -20,8 +20,8 @@
       "_$id": "4j74okeh",
       "_$type": "Sprite",
       "name": "Ball",
-      "x": 400,
-      "y": 520,
+      "x": 667,
+      "y": 713,
       "width": 10,
       "height": 10,
       "_gcmds": [

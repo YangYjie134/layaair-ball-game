@@ -226,4 +226,9 @@ export class ScoreManager {
         // 返回当前分数
         return this.score;
     }
+
+    // 是否已经胜利（供外部判断是否允许按 R 重开）
+    public isWon(): boolean {
+        return this.hasWon;
+    }
 }

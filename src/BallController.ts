@@ -46,6 +46,8 @@ export default class BallController extends Laya.Script {
     // ── 3. 输入控制相关变量 ──
     // 上一帧是否按下了跳跃键（用于检测按键刚按下）
     private prevJumpKey: boolean = false;
+    // 上一帧是否按下了重开键 R（用于检测按键刚按下）
+    private prevRestartKey: boolean = false;
 
     private platforms: any[] = [];       // Platform_ 开头的节点和 Ground 都会放进这里。
 
@@ -75,6 +77,15 @@ export default class BallController extends Laya.Script {
         const ball = this.owner as any;
         if (!ball) return;
 
+        // ── 步骤 0：胜利后按 R 重开本局（最先检测，命中则跳过本帧后续逻辑）──
+        const restart = this.isKeyDown(Laya.Keyboard.R);
+        if (restart && !this.prevRestartKey && ScoreManager.instance.isWon()) {
+            this.prevRestartKey = restart;
+            this.restartGame();
+            return;
+        }
+        this.prevRestartKey = restart;
+
         // Laya 里这个小球的绘制圆心正好在节点坐标上，所以这里直接把 ball.x/y 当球心。
         // 更新球的当前X坐标
         this.centerX = ball.x;
@@ -90,8 +101,10 @@ export default class BallController extends Laya.Script {
         const left = this.isKeyDown(Laya.Keyboard.LEFT, Laya.Keyboard.A);
         // 检测右移按键（RIGHT或D）
         const right = this.isKeyDown(Laya.Keyboard.RIGHT, Laya.Keyboard.D);
-        // 检测跳跃按键（W）
-        const jump = this.isKeyDown(Laya.Keyboard.W);
+        // 检测跳跃按键（W 或 Space）
+        const jump =
+            this.isKeyDown(Laya.Keyboard.W) ||
+            this.isKeyDown(Laya.Keyboard.SPACE);
 
         // 如果按下左键则向左加速
         if (left) this.vx -= this.moveAccel;
@@ -118,6 +131,12 @@ export default class BallController extends Laya.Script {
         // prevJumpKey 用来保证按住 W 时只跳一次，不会每一帧连续起跳。
         // 检测跳跃（按下W、之前未按下、且在地面上）
         if (jump && !this.prevJumpKey && this.onGround) {
+            // 游戏开始：只有从 Ground 主动起跳才算正式开始
+            // 此处 groundPlatform 反映的是上一帧落地结果（重置发生在跳跃判断之后）
+            if (!this.gameStarted && this.groundPlatform?.name === "Ground") {
+                this.gameStarted = true;
+                console.log("Game started");
+            }
             // 设置向上的初始速度
             this.vy = -this.jumpStrength;
             // 标记不在地面
@@ -162,6 +181,13 @@ export default class BallController extends Laya.Script {
      * 这样平台侧面和底面不会产生碰撞，也就避开了顶角卡顿。
      */
     private resolveVerticalCollision(platform: any): void {
+        // 游戏未开始时，所有 Platform_* 都不参与碰撞（像不存在一样）。
+        // 只跳过当前这一个平台，循环里后面的 Ground 仍会被检测，不会穿地。
+        const name = platform?.name;
+        if (!this.gameStarted && typeof name === "string" && name.indexOf("Platform_") === 0) {
+            return;
+        }
+
         // 获取球的半径用于计算碰撞判定
         const radius = this.getBallRadius();
         // 获取平台的X坐标
@@ -199,27 +225,17 @@ export default class BallController extends Laya.Script {
             const platformName = platform?.name || "";
             // 如果触碰地面且游戏已开始，则重新生成
             if (platformName === "Ground") {
-                if (this.gameStarted) {
+                // 已胜利时不要触发死亡复活：respawn() 会调用 ScoreManager.reset()
+                // 把 hasWon 一起清掉，导致胜利画面消失且 R 重开失效。
+                if (this.gameStarted && !ScoreManager.instance.isWon()) {
                     this.respawn();
                 }
                 return;
             }
 
-            // 如果是Platform_开头的平台
+            // 如果是Platform_开头的平台（此时 gameStarted 必为 true，未开始已在函数开头被拦截）
             if (typeof platformName === "string" && platformName.indexOf("Platform_") === 0) {
-                // 只有第一次落到 Platform_1 顶部才正式开始游戏
-                if (!this.gameStarted) {
-                    if (platformName === "Platform_1") {
-                        this.gameStarted = true;
-                        console.log("Game started");
-                        // Platform_1 计第一分
-                        ScoreManager.instance.addPlatformScore(platform);
-                    }
-                    // 游戏未开始时踩到 Platform_2~5：不加分、不开始（物理落地照常）
-                    return;
-                }
-
-                // 游戏已开始：所有平台按 Set 去重逻辑正常加分
+                // 按 Set 去重逻辑正常加分
                 ScoreManager.instance.addPlatformScore(platform);
             }
         }
@@ -304,6 +320,15 @@ export default class BallController extends Laya.Script {
 
         // 重置分数管理器
         ScoreManager.instance.reset();
+    }
+
+    // 胜利后重开本局：复用 respawn() 的全部重置，再重新随机平台布局
+    private restartGame(): void {
+        console.log("Restart game");
+        // 复用死亡复活的状态重置（球回出生点、速度清零、gameStarted=false、分数重置）
+        this.respawn();
+        // 与普通死亡复活不同：重开一局需要重新随机平台位置
+        this.randomizePlatforms();
     }
     /**
      * 统一计算墙体内侧边界。
