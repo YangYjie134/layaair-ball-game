@@ -207,12 +207,19 @@ export default class BallController extends Laya.Script {
 
             // 如果是Platform_开头的平台
             if (typeof platformName === "string" && platformName.indexOf("Platform_") === 0) {
-                // 游戏开始标记
+                // 只有第一次落到 Platform_1 顶部才正式开始游戏
                 if (!this.gameStarted) {
-                    console.log("Game started");
+                    if (platformName === "Platform_1") {
+                        this.gameStarted = true;
+                        console.log("Game started");
+                        // Platform_1 计第一分
+                        ScoreManager.instance.addPlatformScore(platform);
+                    }
+                    // 游戏未开始时踩到 Platform_2~5：不加分、不开始（物理落地照常）
+                    return;
                 }
-                this.gameStarted = true;
-                // 添加平台分数
+
+                // 游戏已开始：所有平台按 Set 去重逻辑正常加分
                 ScoreManager.instance.addPlatformScore(platform);
             }
         }
@@ -411,6 +418,98 @@ export default class BallController extends Laya.Script {
         if (this.platforms.length === 0) {
             console.warn("⚠️ 场景中未找到任何以 Platform_ 开头的节点！");
         }
+
+        // 场景加载后随机一次平台位置
+        this.randomizePlatforms();
+    }
+
+    // 对 Platform_* 节点做分层随机布局，只改 x / y，不改其他属性
+    private randomizePlatforms(): void {
+        // 只取 Platform_* 节点，按名字排序保证分层顺序稳定
+        const sorted = this.platforms
+            .filter((p: any) => typeof p.name === "string" && p.name.indexOf("Platform_") === 0)
+            .sort((a: any, b: any) => (a.name as string).localeCompare(b.name));
+
+        const count = sorted.length;
+        if (count === 0) return;
+
+        // 可玩区域 X 范围：左右墙内侧（与 getWallInnerBound 保持一致）
+        const xMin = 30;
+        const xMax = 1304;
+
+        // Y 轴：固定基础高度 + 小幅抖动。Platform_1 最低(Y≈620)，每层向上抬约 120。
+        const baseY = 620;       // Platform_1 基础高度
+        const layerStep = 120;   // 每层向上抬升
+        const yJitter = 20;      // ±20 抖动
+
+        // X 轴：相邻平台中心水平距离尽量不超过 300
+        const maxNeighborDX = 300;
+
+        // 记录上一块平台的中心 X，用于约束相邻距离
+        let prevCenterX = this.startX;
+
+        for (let i = 0; i < count; i++) {
+            const platform = sorted[i];
+            const platformWidth = platform.width || 200;
+            const halfWidth = platformWidth / 2;
+
+            // ── Y：基础高度向上分层 + 抖动 ──
+            const layerBaseY = baseY - i * layerStep;
+            const jitter = (Math.random() * 2 - 1) * yJitter;
+            platform.y = Math.round(layerBaseY + jitter);
+
+            // ── X：中心坐标的合法范围（保证平台整体在墙内）──
+            const centerMin = xMin + halfWidth;
+            const centerMax = xMax - halfWidth;
+
+            // 相邻平台中心距离约束在 ±maxNeighborDX 内
+            let lo = Math.max(centerMin, prevCenterX - maxNeighborDX);
+            let hi = Math.min(centerMax, prevCenterX + maxNeighborDX);
+
+            let centerX: number;
+            if (i === 0) {
+                // Platform_1 特殊处理：避开出生点正下方，但留在可跳范围内
+                centerX = this.pickPlatform1CenterX(centerMin, centerMax, halfWidth);
+            } else {
+                if (lo > hi) { lo = centerMin; hi = centerMax; } // 兜底，避免空区间
+                centerX = lo + Math.random() * (hi - lo);
+            }
+
+            platform.x = Math.round(centerX - halfWidth);
+            prevCenterX = centerX;
+        }
+    }
+
+    // 为 Platform_1 选一个中心 X：避开出生点正下方，且不离出生点太远
+    private pickPlatform1CenterX(centerMin: number, centerMax: number, halfWidth: number): number {
+        const ballHalf = this.getBallRadius();
+        // 出生点正下方的“禁放”区间：球的水平投影与平台重叠则视为正下方
+        const forbidLo = this.startX - halfWidth - ballHalf;
+        const forbidHi = this.startX + halfWidth + ballHalf;
+        // 希望 Platform_1 落在出生点左右一个可跳偏移内
+        const minOffset = halfWidth + ballHalf + 20; // 至少错开，不在正下方
+        const maxOffset = 280;                       // 不要离出生点太远
+
+        // 候选：出生点左侧和右侧各一段，取墙内有效部分
+        const rightLo = Math.max(centerMin, this.startX + minOffset);
+        const rightHi = Math.min(centerMax, this.startX + maxOffset);
+        const leftHi  = Math.min(centerMax, this.startX - minOffset);
+        const leftLo  = Math.max(centerMin, this.startX - maxOffset);
+
+        const ranges: Array<[number, number]> = [];
+        if (rightLo <= rightHi) ranges.push([rightLo, rightHi]);
+        if (leftLo <= leftHi) ranges.push([leftLo, leftHi]);
+
+        // 正常情况：在左右候选区间里随机挑一段
+        if (ranges.length > 0) {
+            const [lo, hi] = ranges[Math.floor(Math.random() * ranges.length)];
+            return lo + Math.random() * (hi - lo);
+        }
+
+        // 兜底：直接放到出生点右侧最小错开处（仍夹在墙内），保证不在正下方
+        let fallback = this.startX + minOffset;
+        if (fallback > centerMax) fallback = this.startX - minOffset;
+        return Math.min(centerMax, Math.max(centerMin, fallback));
     }
 
     // 检查一个或多个按键是否被按下
