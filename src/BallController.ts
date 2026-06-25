@@ -28,8 +28,8 @@ export default class BallController extends Laya.Script {
     private onGround: boolean = false;   // 当前帧是否站在地面/平台上。
 
     // ── 2. 碰撞计算状态 ──
-    // 游戏是否已开始（第一次接触Platform_平台时启动）
-    private gameStarted: boolean = false;
+    private platformsActive: boolean = false; // 从 Ground 起跳后激活 Platform_* 碰撞
+    private deathEnabled: boolean = false;    // 第一次踩到 Platform_* 后，Ground 才算死亡区
     // 球的初始出生点X坐标
     private startX: number = 0;
     // 球的初始出生点Y坐标
@@ -48,6 +48,11 @@ export default class BallController extends Laya.Script {
     private prevJumpKey: boolean = false;
     // 上一帧是否按下了重开键 R（用于检测按键刚按下）
     private prevRestartKey: boolean = false;
+
+    // ── 4. 关卡状态 ──
+    private currentLevel: number = 1;
+    private readonly maxLevel: number = 3;
+    private levelText: any = null;
 
     private platforms: any[] = [];       // Platform_ 开头的节点和 Ground 都会放进这里。
 
@@ -69,6 +74,7 @@ export default class BallController extends Laya.Script {
         // 游戏启动时先记录平台和墙体节点，后续碰撞都靠这些节点的位置计算。
         // 收集场景中的所有平台
         this.collectPlatforms();
+        this.createLevelText();
     }
 
     // 每帧更新，处理输入、物理、碰撞等逻辑
@@ -131,11 +137,11 @@ export default class BallController extends Laya.Script {
         // prevJumpKey 用来保证按住 W 时只跳一次，不会每一帧连续起跳。
         // 检测跳跃（按下W、之前未按下、且在地面上）
         if (jump && !this.prevJumpKey && this.onGround && !ScoreManager.instance.isWon()) {
-            // 游戏开始：只有从 Ground 主动起跳才算正式开始
+            // 从 Ground 主动起跳后，Platform_* 才开始参与碰撞。
             // 此处 groundPlatform 反映的是上一帧落地结果（重置发生在跳跃判断之后）
-            if (!this.gameStarted && this.groundPlatform?.name === "Ground") {
-                this.gameStarted = true;
-                console.log("Game started");
+            if (!this.platformsActive && this.groundPlatform?.name === "Ground") {
+                this.platformsActive = true;
+                console.log("Platforms active");
             }
             // 设置向上的初始速度
             this.vy = -this.jumpStrength;
@@ -181,10 +187,10 @@ export default class BallController extends Laya.Script {
      * 这样平台侧面和底面不会产生碰撞，也就避开了顶角卡顿。
      */
     private resolveVerticalCollision(platform: any): void {
-        // 游戏未开始时，所有 Platform_* 都不参与碰撞（像不存在一样）。
+        // 平台未激活时，所有 Platform_* 都不参与碰撞（像不存在一样）。
         // 只跳过当前这一个平台，循环里后面的 Ground 仍会被检测，不会穿地。
         const name = platform?.name;
-        if (!this.gameStarted && typeof name === "string" && name.indexOf("Platform_") === 0) {
+        if (!this.platformsActive && typeof name === "string" && name.indexOf("Platform_") === 0) {
             return;
         }
 
@@ -227,14 +233,15 @@ export default class BallController extends Laya.Script {
             if (platformName === "Ground") {
                 // 已胜利时不要触发死亡复活：respawn() 会调用 ScoreManager.reset()
                 // 把 hasWon 一起清掉，导致胜利画面消失且 R 重开失效。
-                if (this.gameStarted && !ScoreManager.instance.isWon()) {
+                if (this.deathEnabled && !ScoreManager.instance.isWon()) {
                     this.respawn();
                 }
                 return;
             }
 
-            // 如果是Platform_开头的平台（此时 gameStarted 必为 true，未开始已在函数开头被拦截）
+            // 如果是Platform_开头的平台（此时 platformsActive 必为 true，未激活已在函数开头被拦截）
             if (typeof platformName === "string" && platformName.indexOf("Platform_") === 0) {
+                this.deathEnabled = true;
                 // 按 Set 去重逻辑正常加分
                 ScoreManager.instance.addPlatformScore(platform);
             }
@@ -316,19 +323,47 @@ export default class BallController extends Laya.Script {
         this.onGround = false;
         this.groundPlatform = null;
         // 重置游戏状态
-        this.gameStarted = false;
+        this.platformsActive = false;
+        this.deathEnabled = false;
 
         // 重置分数管理器
         ScoreManager.instance.reset();
     }
 
-    // 胜利后重开本局：复用 respawn() 的全部重置，再重新随机平台布局
+    // 胜利后进入下一关：复用 respawn() 的全部重置，再重新随机平台布局
     private restartGame(): void {
         console.log("Restart game");
-        // 复用死亡复活的状态重置（球回出生点、速度清零、gameStarted=false、分数重置）
+
+        this.currentLevel++;
+        if (this.currentLevel > this.maxLevel) {
+            this.currentLevel = 1;
+        }
+
         this.respawn();
-        // 与普通死亡复活不同：重开一局需要重新随机平台位置
         this.randomizePlatforms();
+        this.updateLevelText();
+    }
+
+    private createLevelText(): void {
+        if (this.levelText) return;
+
+        this.levelText = new Laya.Text();
+        this.levelText.fontSize = 28;
+        this.levelText.color = "#FFD700";
+        this.levelText.bold = true;
+        this.levelText.x = 20;
+        this.levelText.y = 60;
+        this.levelText.width = 300;
+        this.levelText.height = 50;
+        this.levelText.zOrder = 9999;
+
+        Laya.stage.addChild(this.levelText);
+        this.updateLevelText();
+    }
+
+    private updateLevelText(): void {
+        if (!this.levelText) return;
+        this.levelText.text = "Level: " + this.currentLevel;
     }
     /**
      * 统一计算墙体内侧边界。
