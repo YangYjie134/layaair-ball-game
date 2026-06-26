@@ -314,6 +314,7 @@ export default class BallController extends Laya.Script {
         // 恢复到出生点位置
         this.centerX = this.startX;
         this.centerY = this.startY;
+        this.previousY = this.startY;
 
         // 重置速度
         this.vx = 0;
