@@ -4,6 +4,15 @@ declare const Laya: any;
 const { regClass } = Laya;
 // 导入分数管理器，用于同步分数、胜负状态和重开逻辑
 import { ScoreManager } from "./ScoreManager";
+
+interface MovingConfig {
+    axis: 'x';               // 第一版只做水平
+    speed: number;           // 像素/帧，建议默认值 1.5
+    rangeMin: number;        // 平台合法移动左边界（来自 randomizePlatforms 的 centerMin）
+    rangeMax: number;        // 平台合法移动右边界（来自 centerMax - platformWidth）
+    direction: 1 | -1;       // 当前方向，初始为 1
+}
+
 // 使用 regClass 装饰器注册脚本类，使其能在 Laya 编辑器中被识别
 @regClass()
 // 导出 BallController 类，继承 Laya.Script 以获得生命周期回调能力
@@ -55,6 +64,7 @@ export default class BallController extends Laya.Script {
     private levelText: any = null;
 
     private platforms: any[] = [];       // Platform_ 开头的节点和 Ground 都会放进这里。
+    private movingConfigs: Map<any, MovingConfig> = new Map();
 
     // 初始化时记录出生点并收集平台与墙体节点，后续碰撞逻辑将以这些节点为基准
     onAwake(): void {
@@ -165,6 +175,7 @@ export default class BallController extends Laya.Script {
         this.centerY += this.vy;
         // 检测垂直方向的碰撞
         for (const platform of this.platforms) {
+            this.updateMovingPlatform(platform);// 新增：先更新移动平台位置
             this.resolveVerticalCollision(platform);// 检测球是否与平台发生垂直碰撞，并处理落地逻辑
         }
 
@@ -295,6 +306,19 @@ export default class BallController extends Laya.Script {
         // [死亡/重生系统] 掉出屏幕底部后自动重生。
         // 检测是否死亡
         this.checkDeath();
+    }
+
+    private updateMovingPlatform(platform: any): void {
+        const config = this.movingConfigs.get(platform);
+        if (!config) return;    
+        platform.x += config.speed * config.direction;
+        if (platform.x >= config.rangeMax) {
+            platform.x = config.rangeMax;
+            config.direction = -1;
+        } else if (platform.x <= config.rangeMin) {
+            platform.x = config.rangeMin;
+            config.direction = 1;
+        }
     }
 
     // 检查球是否掉出屏幕
@@ -493,6 +517,7 @@ export default class BallController extends Laya.Script {
             .sort((a: any, b: any) => (a.name as string).localeCompare(b.name));
 
         const count = sorted.length;
+        this.movingConfigs.clear();  // 每次重新布局时清除旧配置
         if (count === 0) return;
 
         // 可玩区域 X 范围：左右墙内侧（与 getWallInnerBound 保持一致）
@@ -509,6 +534,8 @@ export default class BallController extends Laya.Script {
 
         // 记录上一块平台的中心 X，用于约束相邻距离
         let prevCenterX = this.startX;
+        const movingCount = this.currentLevel === 3 ? 2 : this.currentLevel === 2 ? 1 : 0;
+        let movingIndex = 0;
 
         for (let i = 0; i < count; i++) {
             const platform = sorted[i];
@@ -532,6 +559,12 @@ export default class BallController extends Laya.Script {
             if (i === 0) {
                 // Platform_1 特殊处理：避开出生点正下方，但留在可跳范围内
                 centerX = this.pickPlatform1CenterX(centerMin, centerMax, halfWidth);
+            } else if (movingCount > 0 && i === movingCount) {
+                // 移动平台正上方第一层固定平台：偏向移动平台行程右端，缩小有效起跳窗口。
+                const movingPlatform = sorted[i - 1];
+                const initialX = movingPlatform.x || 0;
+                const biasedCenterX = initialX + 220 + (Math.random() * 2 - 1) * 60;
+                centerX = Math.min(centerMax, Math.max(centerMin, biasedCenterX));
             } else {
                 if (lo > hi) { lo = centerMin; hi = centerMax; } // 兜底，避免空区间
                 centerX = lo + Math.random() * (hi - lo);
@@ -539,6 +572,26 @@ export default class BallController extends Laya.Script {
 
             platform.x = Math.round(centerX - halfWidth);
             prevCenterX = centerX;
+
+            // 移动平台分配（Level 2: 最低1个, Level 3: 最低2个）
+            // 平台数组已按 y 坐标降序排列（y 越大 = 位置越低）
+            // i === 0 是最低平台，i === 1 是次低平台
+            if (i < movingCount) {
+                const leftInner = this.getWallInnerBound(this.leftWall, "left");
+                const rightInner = this.getWallInnerBound(this.rightWall, "right");
+                const rangeMin = Math.max(leftInner, platform.x - 300);
+                const rangeMax = Math.min(rightInner - platform.width, platform.x + 300);
+                const safeRangeMin = rangeMin <= rangeMax ? rangeMin : platform.x;
+                const safeRangeMax = rangeMin <= rangeMax ? rangeMax : platform.x;
+                this.movingConfigs.set(platform, {
+                    axis: 'x',
+                    speed: 1.5,
+                    rangeMin: safeRangeMin,
+                    rangeMax: safeRangeMax,
+                    direction: movingIndex === 0 ? 1 : -1,
+                });
+                movingIndex++;
+            }
         }
     }
 
