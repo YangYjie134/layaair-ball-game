@@ -1,19 +1,19 @@
-﻿// 声明Laya全局对象
+﻿// 声明 Laya 全局对象，供 TypeScript 识别运行时类型
 declare const Laya: any;
-// 解构Laya的regClass方法用于注册组件
+// 从 Laya 中取出注册脚本所需的装饰器
 const { regClass } = Laya;
-// 导入分数管理器
+// 导入分数管理器，用于同步分数、胜负状态和重开逻辑
 import { ScoreManager } from "./ScoreManager";
-// 使用regClass装饰器注册该脚本类
+// 使用 regClass 装饰器注册脚本类，使其能在 Laya 编辑器中被识别
 @regClass()
-// 导出BallController类，继承Laya.Script以获得生命周期支持
+// 导出 BallController 类，继承 Laya.Script 以获得生命周期回调能力
 export default class BallController extends Laya.Script {
 
-    // 这个脚本现在走"自定义平台物理"路线：
-    // 球的位置、速度、落地、墙体限制都由这里计算，Box2D 碰撞在运行时会被关闭。
-    // 这样做的目的，是绕开 Box2D 在平台顶角处反复接触/分离导致的卡顿。
+    // 当前脚本采用自定义平台物理方案：
+    // 球的移动、落地判断、墙体限制和复活逻辑都由脚本自行计算。
+    // 这样可以避免 Box2D 在平台顶角附近反复接触/分离造成的卡顿。
 
-    // ── 1. 运动参数 ──
+    // ── 1. 运动参数：控制球的速度、重力和跳跃表现 ──
     // 水平速度（向右为正）
     private vx: number = 0;
     // 竖直速度（向下为正）
@@ -27,7 +27,7 @@ export default class BallController extends Laya.Script {
     private bounceX: number = 0.5;       // 撞左右墙时的水平反弹比例。
     private onGround: boolean = false;   // 当前帧是否站在地面/平台上。
 
-    // ── 2. 碰撞计算状态 ──
+    // ── 2. 碰撞计算状态：记录平台激活状态与死亡复活条件 ──
     private platformsActive: boolean = false; // 从 Ground 起跳后激活 Platform_* 碰撞
     private deathEnabled: boolean = false;    // 第一次踩到 Platform_* 后，Ground 才算死亡区
     // 球的初始出生点X坐标
@@ -43,20 +43,20 @@ export default class BallController extends Laya.Script {
     private leftWall: any = null;        // 左墙节点，用来避免球钻进白墙。
     private rightWall: any = null;       // 右墙节点，用来避免球钻进白墙。
 
-    // ── 3. 输入控制相关变量 ──
+    // ── 3. 输入控制相关变量：记录按键状态，避免连续触发跳跃与重开 ──
     // 上一帧是否按下了跳跃键（用于检测按键刚按下）
     private prevJumpKey: boolean = false;
     // 上一帧是否按下了重开键 R（用于检测按键刚按下）
     private prevRestartKey: boolean = false;
 
-    // ── 4. 关卡状态 ──
+    // ── 4. 关卡状态：记录当前关卡编号与界面显示内容 ──
     private currentLevel: number = 1;
     private readonly maxLevel: number = 3;
     private levelText: any = null;
 
     private platforms: any[] = [];       // Platform_ 开头的节点和 Ground 都会放进这里。
 
-    // 游戏初始化，在脚本被激活时调用一次
+    // 初始化时记录出生点并收集平台与墙体节点，后续碰撞逻辑将以这些节点为基准
     onAwake(): void {
         // 获取当前脚本所属的球体节点
         const ball = this.owner as any;
@@ -77,20 +77,20 @@ export default class BallController extends Laya.Script {
         this.createLevelText();
     }
 
-    // 每帧更新，处理输入、物理、碰撞等逻辑
+    // 每帧更新，处理输入、重力、跳跃和碰撞等逻辑
     onUpdate(): void {
         // 获取球的节点
         const ball = this.owner as any;
         if (!ball) return;
 
         // ── 步骤 0：胜利后按 R 重开本局（最先检测，命中则跳过本帧后续逻辑）──
-        const restart = this.isKeyDown(Laya.Keyboard.R);
-        if (restart && !this.prevRestartKey && ScoreManager.instance.isWon()) {
-            this.prevRestartKey = restart;
-            this.restartGame();
-            return;
+        const restart = this.isKeyDown(Laya.Keyboard.R);// 检测重开按键 R 是否按下
+        if (restart && !this.prevRestartKey && ScoreManager.instance.isWon()) {// 按下 R 且之前未按下，且游戏已胜利
+            this.prevRestartKey = restart;// 记录本帧的重开按键状态，用于下帧判断是否按键刚按下
+            this.restartGame();// 调用 restartGame() 方法，重开本局并切换到下一关的随机平台布局
+            return;// 跳过本帧后续逻辑，避免在胜利状态下继续处理物理和碰撞
         }
-        this.prevRestartKey = restart;
+        this.prevRestartKey = restart;// 记录本帧的重开按键状态，用于下帧判断是否按键刚按下
 
         // Laya 里这个小球的绘制圆心正好在节点坐标上，所以这里直接把 ball.x/y 当球心。
         // 更新球的当前X坐标
@@ -107,10 +107,10 @@ export default class BallController extends Laya.Script {
         const left = this.isKeyDown(Laya.Keyboard.LEFT, Laya.Keyboard.A);
         // 检测右移按键（RIGHT或D）
         const right = this.isKeyDown(Laya.Keyboard.RIGHT, Laya.Keyboard.D);
-        // 检测跳跃按键（W 或 Space）
+        // 检测跳跃按键（W 或 up）
         const jump =
-            this.isKeyDown(Laya.Keyboard.W) ||
-            this.isKeyDown(Laya.Keyboard.SPACE);
+            this.isKeyDown(Laya.Keyboard.W)||
+            this.isKeyDown(Laya.Keyboard.UP);
 
         // 如果按下左键则向左加速
         if (left) this.vx -= this.moveAccel;
@@ -128,19 +128,18 @@ export default class BallController extends Laya.Script {
         // 限制最大水平速度，避免长按方向键后速度无限增大。
         // 限制水平速度在最大值范围内
         this.vx = Math.max(-this.maxSpeedX, Math.min(this.maxSpeedX, this.vx));
-
         // ── 步骤 2：应用重力 ──
         // 每帧增加重力加速度到竖直速度
         this.vy += this.gravity;
 
         // ── 步骤 3：跳跃逻辑 ──
         // prevJumpKey 用来保证按住 W 时只跳一次，不会每一帧连续起跳。
-        // 检测跳跃（按下W、之前未按下、且在地面上）
+        // 检测跳跃（按下W、之前未按下、且球在地面上,且游戏未胜利）
         if (jump && !this.prevJumpKey && this.onGround && !ScoreManager.instance.isWon()) {
             // 从 Ground 主动起跳后，Platform_* 才开始参与碰撞。
             // 此处 groundPlatform 反映的是上一帧落地结果（重置发生在跳跃判断之后）
-            if (!this.platformsActive && this.groundPlatform?.name === "Ground") {
-                this.platformsActive = true;
+            if (!this.platformsActive && this.groundPlatform?.name === "Ground") {// Ground 起跳后激活 Platform_* 碰撞
+                this.platformsActive = true;// 激活平台碰撞，使 Platform_* 开始参与碰撞判定
                 console.log("Platforms active");
             }
             // 设置向上的初始速度
@@ -148,7 +147,7 @@ export default class BallController extends Laya.Script {
             // 标记不在地面
             this.onGround = false;
             // 清除平台参考
-            this.groundPlatform = null;
+            this.groundPlatform = null;// Ground 起跳后清除 groundPlatform，避免在空中仍然引用 Ground 平台
         }
         // 记录本帧的跳跃按键状态，用于下帧判断是否按键刚按下
         this.prevJumpKey = jump;
@@ -166,19 +165,19 @@ export default class BallController extends Laya.Script {
         this.centerY += this.vy;
         // 检测垂直方向的碰撞
         for (const platform of this.platforms) {
-            this.resolveVerticalCollision(platform);
+            this.resolveVerticalCollision(platform);// 检测球是否与平台发生垂直碰撞，并处理落地逻辑
         }
 
         // 平台是单向平台：只处理从上往下落到平台顶面，不处理平台侧面和底面。
         // 应用水平速度移动
         this.centerX += this.vx;
-        this.releaseGroundIfUnsupported();
+        this.releaseGroundIfUnsupported();// 检查球是否离开平台边缘，如果离开则取消落地状态，让球自然下落。
 
         // 最后处理顶墙、左右墙和掉出屏幕保护，再把结果写回节点一次。
         // 检测边界碰撞
-        this.clampToCanvas();
+        this.clampToCanvas();// 检查球是否撞到墙体边界，并处理反弹和位置限制，同时检测是否掉出屏幕底部并触发复活逻辑
         // 将球的位置同步回Laya节点
-        this.syncBallSprite(ball);
+        this.syncBallSprite(ball);// 将计算后的球心坐标写回 Laya 节点，更新球的实际显示位置
     }
 
     /**
@@ -213,7 +212,7 @@ export default class BallController extends Laya.Script {
         // 判断球的水平位置是否在平台范围内（加上容差）
         const withinTop = this.centerX >= platformX - edgeGrace && this.centerX <= platformX + platformWidth + edgeGrace;
         // 判断球是否穿过了平台的顶面
-        const crossedTop = previousBottom <= platformTop + 0.5 && currentBottom >= platformTop - 0.5;
+        const crossedTop = previousBottom <= platformTop + 0.5 && currentBottom >= platformTop - 0.5;//don‘t know
 
         // vy >= 0 表示只在下落时落地；向上跳顶到平台底部时直接穿过。
         // crossedTop 通过上一帧和本帧底部位置判断是否跨过平台顶面，避免卡在平台边缘。
@@ -254,8 +253,7 @@ export default class BallController extends Laya.Script {
      */
     private clampToCanvas(): void {
         // 获取球的半径
-        const radius = this.getBallRadius();        
-
+        const radius = this.getBallRadius();
         // 墙是有厚度的矩形，不能只用 0 和 stage.width。
         // 用墙体真正面向场内、会挡住球的那一侧作为可玩区域边界。
         // 获取左墙的内侧边界X坐标
@@ -332,6 +330,7 @@ export default class BallController extends Laya.Script {
     }
 
     // 胜利后进入下一关：复用 respawn() 的全部重置，再重新随机平台布局
+    // 胜利后按 R 重开本局，并切换到下一关的随机平台布局
     private restartGame(): void {
         console.log("Restart game");
 
@@ -345,6 +344,7 @@ export default class BallController extends Laya.Script {
         this.updateLevelText();
     }
 
+    // 创建关卡显示文本，用于在界面上展示当前关卡编号
     private createLevelText(): void {
         if (this.levelText) return;
 
@@ -362,6 +362,7 @@ export default class BallController extends Laya.Script {
         this.updateLevelText();
     }
 
+    // 根据当前关卡状态刷新关卡显示文本
     private updateLevelText(): void {
         if (!this.levelText) return;
         this.levelText.text = "Level: " + this.currentLevel;

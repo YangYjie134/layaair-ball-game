@@ -1,8 +1,8 @@
 declare var Laya: any;
 
-// 分数管理器类：负责游戏分数的计算、显示和获胜判定
+// 分数管理器：负责游戏分数的计算、显示和获胜判定
 export class ScoreManager {
-    // 单例实例
+    // 单例实例，确保全局只存在一个分数管理器
     private static _instance: ScoreManager | null = null;
 
     // 获取分数管理器的单例实例
@@ -27,7 +27,7 @@ export class ScoreManager {
     // 已经得分过的平台集合（防止重复计分）
     private scoredPlatforms: Set<string> = new Set<string>();
 
-    // 初始化分数管理器
+    // 初始化分数管理器，重置分数状态并创建界面文本
     public init(): void {
         // 重置分数
         this.score = 0;
@@ -51,6 +51,7 @@ export class ScoreManager {
         // 隐藏获胜文本
         this.hideWinText();
 
+        // 初始化完成后输出日志，方便确认分数界面已成功创建
         console.log("ScoreManager: Score UI created");
     }
 

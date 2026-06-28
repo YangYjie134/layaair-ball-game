@@ -1,14 +1,15 @@
 declare var Laya: any;
 
-// 背景管理器类：负责游戏场景的背景绘制和星星效果
+// 背景管理器：负责在场景初始化时统一绘制背景与星空装饰
 export class BackgroundManager {
-    // 游戏画布宽度
-    private static readonly WIDTH: number = 1334;
-    // 游戏画布高度
-    private static readonly HEIGHT: number = 750;
+    // 画布宽度用于统一背景尺寸，避免不同分辨率下出现拉伸
+    private static readonly width: number = 1334;
+    // 画布高度用于统一背景尺寸，确保背景与场景比例保持一致
+    private static readonly height: number = 750;
 
     // 绘制背景的公共方法
     public static draw(sceneRoot: any): void {
+        // 调试日志：确认背景绘制流程已经执行
         console.log("BackgroundManager draw called");
         // 查找Scene2D节点
         const scene2D = BackgroundManager.findScene2D(sceneRoot);
@@ -33,8 +34,8 @@ export class BackgroundManager {
         // 设置背景位置和大小
         background.x = 0;
         background.y = 0;
-        background.width = BackgroundManager.WIDTH;
-        background.height = BackgroundManager.HEIGHT;
+        background.width = BackgroundManager.width;
+        background.height = BackgroundManager.height;
         // 禁用鼠标交互
         background.mouseEnabled = false;
 
@@ -43,7 +44,7 @@ export class BackgroundManager {
             // 清空之前的绘制内容
             background.graphics.clear();
             // 绘制深蓝色背景矩形
-            background.graphics.drawRect(0, 0, BackgroundManager.WIDTH, BackgroundManager.HEIGHT, "#06142d");
+            background.graphics.drawRect(0, 0, BackgroundManager.width, BackgroundManager.height, "#06142d");
             // 绘制星星装饰
             BackgroundManager.drawStars(background.graphics);
         } else {
@@ -82,7 +83,7 @@ export class BackgroundManager {
 
     // 绘制背景星星
     private static drawStars(graphics: any): void {
-        // 星星数据数组：包含位置、大小和颜色信息
+        // 星星数据以固定坐标和颜色预设呈现，便于保持背景效果稳定
         const stars: Array<{ x: number; y: number; radius: number; color: string }> = [
             { x: 56, y: 48, radius: 1.5, color: "#ffffff" },
             { x: 128, y: 92, radius: 1, color: "#dcecff" },

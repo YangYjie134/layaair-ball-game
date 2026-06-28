@@ -1,23 +1,21 @@
-// 告诉 TypeScript：运行时会存在一个全局 Laya 对象
-// 防止 VSCode 报“找不到名称 Laya”
+// 告诉 TypeScript：运行时会存在一个全局 Laya 对象，以避免编辑器提示未定义
+// 这类注释用于说明当前脚本依赖运行时环境
 declare var Laya: any;
 
 // 从 Laya 中取出 regClass 和 property
-// regClass：注册脚本类
-// property：暴露属性到编辑器（这里暂时没用到）
+// regClass 用于注册脚本类，property 用于暴露编辑器属性（当前未使用）
 const { regClass, property } = Laya;
+// 背景管理器负责在场景启动时绘制背景与装饰效果
 import { BackgroundManager } from "./BackgroundManager";
+// 分数管理器负责维护分数、胜负状态和界面显示
 import { ScoreManager } from "./ScoreManager";
-// 注册脚本类
-// 让 Laya 编辑器能够识别这个脚本
+// 使用 regClass 注册脚本类，让 Laya 编辑器能够识别当前脚本
 @regClass()
 
-// 创建 Main 类
-// 继承 Laya.Script 后才能挂载到节点上
+// 创建 Main 类，继承 Laya.Script 后才能挂载到场景节点上
 export class Main extends Laya.Script {
 
-    // 脚本启动时执行一次
-    // 类似于游戏的 BeginPlay、Start
+    // 脚本启动时执行一次，类似游戏的开始函数
     onStart() {
         console.log("Main onStart");
         BackgroundManager.draw(this.owner);
