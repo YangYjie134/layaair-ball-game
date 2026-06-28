@@ -67,8 +67,8 @@ export class ScoreManager {
         this.scoreText.bold = true;
 
         // 设置文本位置和大小
-        this.scoreText.x = 20;
-        this.scoreText.y = 20;
+        this.scoreText.x = 40;
+        this.scoreText.y = 30;
         this.scoreText.width = 300;
         this.scoreText.height = 50;
         // 设置z层级为最前面
