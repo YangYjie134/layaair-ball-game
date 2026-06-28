@@ -29,7 +29,7 @@ export default class BallController extends Laya.Script {
     private vy: number = 0;
     private moveAccel: number = 0.7;     // 水平加速度，越大左右启动越快。
     private maxSpeedX: number = 5;       // 水平最大速度，限制球不要越跑越快。
-    private friction: number = 0.95;     // 松开方向键后的减速系数，越接近 1 滑行越久。
+    private friction: number = 0.99;     // 松开方向键后的减速系数，越接近 1 滑行越久。
     private gravity: number = 0.5;       // 每帧给 vy 增加的重力。
     private jumpStrength: number = 13;   // W 跳跃力度，数值越大跳得越高。
     private bounceY: number = 0.6;       // 碰到顶墙时的垂直反弹比例。
