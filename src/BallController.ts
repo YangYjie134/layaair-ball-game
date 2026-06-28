@@ -13,6 +13,15 @@ interface MovingConfig {
     direction: 1 | -1;       // 当前方向，初始为 1
 }
 
+// 消失平台状态:未触发 / 计时中 / 已消失
+type DisappearState = 'idle' | 'counting' | 'hidden';
+
+// 消失平台单块状态
+interface DisappearConfig {
+    state: DisappearState; // 当前状态
+    triggerAt: number;     // 进入 counting 时的时间戳(ms),仅 counting 时有效
+}
+
 // 使用 regClass 装饰器注册脚本类，使其能在 Laya 编辑器中被识别
 @regClass()
 // 导出 BallController 类，继承 Laya.Script 以获得生命周期回调能力
@@ -65,6 +74,10 @@ export default class BallController extends Laya.Script {
 
     private platforms: any[] = [];       // Platform_ 开头的节点和 Ground 都会放进这里。
     private movingConfigs: Map<any, MovingConfig> = new Map();
+    // 踩上后延迟消失的毫秒数
+    private static readonly DISAPPEAR_DELAY: number = 800;
+    // 消失平台状态表,key 为平台节点,与 movingConfigs 同风格
+    private disappearConfigs: Map<any, DisappearConfig> = new Map();
 
     // 初始化时记录出生点并收集平台与墙体节点，后续碰撞逻辑将以这些节点为基准
     onAwake(): void {
@@ -173,6 +186,34 @@ export default class BallController extends Laya.Script {
         // 记录移动前的Y坐标
         this.previousY = this.centerY;
         this.centerY += this.vy;
+        // 推进消失平台计时并刷新预警颜色:counting 超过延迟则消失
+        const nowMs = Laya.timer.currTimer;
+        for (const [p, cfg] of this.disappearConfigs) {
+            if (cfg.state === 'counting') {
+                const elapsedMs = nowMs - cfg.triggerAt;
+                const progress = Math.max(0, Math.min(1, elapsedMs / BallController.DISAPPEAR_DELAY));
+                let warningColor = "#ffcc00";
+
+                if (progress < 0.2) {
+                    // 0%~20%:绿色逐步过渡到黄色
+                    const rate = progress / 0.2;
+                    const red = Math.round(255 * rate);
+                    warningColor = "#" + ("0" + red.toString(16)).slice(-2) + "cc00";
+                } else if (progress >= 0.8) {
+                    // 80%~100%:黄色逐步过渡到红色
+                    const rate = (progress - 0.8) / 0.2;
+                    const green = Math.round(204 * (1 - rate));
+                    warningColor = "#ff" + ("0" + green.toString(16)).slice(-2) + "00";
+                }
+
+                this.repaintPlatformColor(p, warningColor);
+
+                if (elapsedMs >= BallController.DISAPPEAR_DELAY) {
+                    cfg.state = 'hidden';
+                    p.visible = false;
+                }
+            }
+        }
         // 检测垂直方向的碰撞
         for (const platform of this.platforms) {
             this.updateMovingPlatform(platform);// 新增：先更新移动平台位置
@@ -197,6 +238,10 @@ export default class BallController extends Laya.Script {
      * 这样平台侧面和底面不会产生碰撞，也就避开了顶角卡顿。
      */
     private resolveVerticalCollision(platform: any): void {
+        // 已消失的平台不参与碰撞(visible=false 仅隐藏显示,必须在此显式跳过)
+        const dcSkip = this.disappearConfigs.get(platform);
+        if (dcSkip && dcSkip.state === 'hidden') return;
+
         // 平台未激活时，所有 Platform_* 都不参与碰撞（像不存在一样）。
         // 只跳过当前这一个平台，循环里后面的 Ground 仍会被检测，不会穿地。
         const name = platform?.name;
@@ -254,6 +299,12 @@ export default class BallController extends Laya.Script {
                 this.deathEnabled = true;
                 // 按 Set 去重逻辑正常加分
                 ScoreManager.instance.addPlatformScore(platform);
+                // 消失平台:首次踩上时开始计时(幂等,仅 idle -> counting)
+                const dc = this.disappearConfigs.get(platform);
+                if (dc && dc.state === 'idle') {
+                    dc.state = 'counting';
+                    dc.triggerAt = Laya.timer.currTimer;
+                }
             }
         }
     }
@@ -321,6 +372,21 @@ export default class BallController extends Laya.Script {
         }
     }
 
+    // 按颜色重绘平台矩形填充,不重建绘制命令
+    private repaintPlatformColor(platform: any, color: string): void {
+        const graphics = platform?.graphics;
+        const cmds = graphics?.cmds;
+        if (!graphics || !Array.isArray(cmds) || !Laya.DrawRectCmd) return;
+
+        const drawRectCmd = cmds.find((cmd: any) => cmd instanceof Laya.DrawRectCmd);
+        if (!drawRectCmd) return;
+
+        drawRectCmd.fillColor = color;
+        if (typeof graphics.repaint === "function") {
+            graphics.repaint();
+        }
+    }
+
     // 检查球是否掉出屏幕
     private checkDeath(): void {
         // 如果球Y位置超出屏幕下方100像素，则重新生成
@@ -351,6 +417,14 @@ export default class BallController extends Laya.Script {
 
         // 重置分数管理器
         ScoreManager.instance.reset();
+
+        // 同关死亡重来:消失平台全部复原
+        for (const [p, cfg] of this.disappearConfigs) {
+            cfg.state = 'idle';
+            cfg.triggerAt = 0;
+            p.visible = true;
+            this.repaintPlatformColor(p, "#00cc00");
+        }
     }
 
     // 胜利后进入下一关：复用 respawn() 的全部重置，再重新随机平台布局
@@ -592,6 +666,33 @@ export default class BallController extends Laya.Script {
                 });
                 movingIndex++;
             }
+        }
+
+        // 先恢复所有 Platform_* 可见(节点复用,上一轮可能残留 hidden)
+        for (const p of sorted) {
+            p.visible = true;
+            this.repaintPlatformColor(p, "#ffffff");
+        }
+        // 再按当前关卡注册消失平台(此时 movingConfigs 已填充完毕)
+        this.setupDisappearPlatforms(sorted);
+    }
+
+    /**
+     * 按当前关卡注册消失平台:仅 Level 3,1 块。
+     * 目标为 sorted[movingCount],即第一块非移动的 Platform_*,天然不与 movingConfigs 重合。
+     * sorted 仅含 Platform_*(不含 Ground)。若数量不足 movingCount+1,直接 return 不注册。
+     */
+    private setupDisappearPlatforms(sorted: any[]): void {
+        this.disappearConfigs.clear();
+        if (this.currentLevel !== 3) return;
+
+        const movingCount = 2; // Level 3 固定 2 块移动平台,sorted[0]、sorted[1]
+        if (sorted.length < movingCount + 1) return; // 平台不足,放弃注册
+
+        const target = sorted[movingCount]; // 第一块非移动平台
+        if (target) {
+            this.disappearConfigs.set(target, { state: 'idle', triggerAt: 0 });
+            this.repaintPlatformColor(target, "#00cc00");
         }
     }
 
