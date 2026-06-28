@@ -353,7 +353,7 @@ export default class BallController extends Laya.Script {
         this.levelText.color = "#FFD700";
         this.levelText.bold = true;
         this.levelText.x = 20;
-        this.levelText.y = 60;
+        this.levelText.y = 90;
         this.levelText.width = 300;
         this.levelText.height = 50;
         this.levelText.zOrder = 9999;
