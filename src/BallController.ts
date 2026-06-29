@@ -362,6 +362,9 @@ export default class BallController extends Laya.Script {
     private updateMovingPlatform(platform: any): void {
         const config = this.movingConfigs.get(platform);
         if (!config) return;    
+        // [第3轮] hidden 的消失平台停止移动:冻结在消失瞬间的 x
+        const dc = this.disappearConfigs.get(platform);
+        if (dc && dc.state === 'hidden') return;
         platform.x += config.speed * config.direction;
         if (platform.x >= config.rangeMax) {
             platform.x = config.rangeMax;

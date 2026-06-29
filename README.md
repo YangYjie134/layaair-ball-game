@@ -24,6 +24,8 @@
 * 移动平台（Level 2 / Level 3）
 * Level 3 消失平台
 * 消失平台颜色预警（绿 → 黄 → 红）
+* 移动 + 消失叠加平台（同一平台可同时移动并消失）
+* 消失平台 hidden 后停止移动（冻结在消失瞬间位置）
 * 代码绘制背景
 * 基础游戏循环
 
@@ -176,17 +178,37 @@ src/
 完成移动平台、消失平台功能及一处视觉 bug 修复：
 
 1. 完成移动平台功能：使用 `Map` 管理移动平台配置，Level 2 最低 1 个、Level 3 最低 2 个移动平台，并修复移动平台穿墙问题；小球不粘附移动平台；
-2. 新增消失平台机制：Level 3 中指定一块非移动的固定平台（`sorted[movingCount]`），小球从上方踩上后开始计时，短暂延迟后平台消失、不再参与碰撞，死亡复活或进入新关时恢复；
+2. 新增消失平台机制：Level 3 中指定一块非移动的固定平台（`sorted[movingCount]`），小球从上方踩上后开始计时，短暂延迟后平台消失、不再参与碰撞，死亡复活或进入新关时恢复；（注：此行为已被 2026.6.30 三轮方案取代，现为全平台随机选取 + 允许与移动平台叠加。）
 3. 为消失平台增加颜色预警：平时为绿色，被踩后随倒计时由绿 → 黄 → 红渐变，提示平台即将消失；
 4. 修复一处**对象复用导致的颜色残留 bug**：平台节点跨关卡复用，消失平台的染色在换关时未被重置，导致颜色残留到其他关卡同位置的普通平台上，误导玩家。修复方式是在平台刷新（`randomizePlatforms()`）时，先将所有平台颜色统一重置回原始白色，再单独为当前关卡的消失平台上色——注意顺序必须"先刷白、再刷绿目标平台"，否则会把刚标绿的消失平台又覆盖成白色。
 
 复盘：渲染对象被跨关卡复用时，所有运行时修改过的视觉状态（颜色、透明度、可见性等）都必须在复用边界处显式重置——`visible` 容易记得重置，颜色这类属性容易被漏，被漏掉的那个属性就是 bug 所在。
 
+### 2026.6.30
+
+完成特殊平台三轮方案，实现移动 / 消失 / 叠加机制组合：
+
+1. 第 1 轮 — 随机分布：移动平台改用 `movingIndices` Set 随机抽样，替代原固定层选取；消失平台从池中随机取一；删除约 636 行旧偏置逻辑。
+   commit: `feat: randomize moving and disappearing platform selection`
+2. 第 2 轮 — 机制叠加：`setupDisappearPlatforms` 消失候选池由"非移动平台"放宽为"全部 Platform_*"，故意取消移动 / 消失互斥，同一平台可同时移动 + 消失。
+   commit: `feat: allow moving and disappearing platform overlap`
+3. 第 3 轮 — hidden 后停止移动：在 `updateMovingPlatform` 中，于 `if (!config) return;` 之后、`platform.x` 推进之前加入 hidden 检查，消失平台 `state === 'hidden'` 时提前 return，冻结在消失瞬间的 x。状态口径：`idle` / `counting` 继续移动（保留变色警告阶段），仅 `hidden` 停止。
+   commit: `fix: stop disappearing platform from moving after it hides`
+
+每帧顺序保证第 3 轮成立：`centerY += vy` → disappearConfigs 推进计时 / 变色 / 置 hidden → platforms 遍历 `updateMovingPlatform`，hidden 转换发生在移动更新之前。
+
+范围说明（如实记录）：hidden 期间平台已不可见 + 碰撞跳过，故 hidden 期间无可见差异；第 3 轮唯一可观察到的效果是同关 respawn——`respawn()` 恢复 visible 但不重置 `platform.x`，故修复后消失平台在原位重现，而非隐身期间漂移后重现。
+
+设计决策（L2 移动平台分布）：L2 保留"全平台随机"，记为接受的预期行为，非 bug。曾考虑限制为低层池 `{1, 2}` 以平滑教学节奏，最终改为后期用 Level intro 提示 UI 解决"认知突兀"，生成规则维持现状；若 UI 提示上线后实测 L2 第一跳仍突兀，再单独做 pool 限制（兜底项）。
+
 ## 后续计划
 
 * 调整 Score UI 和 Level UI 间距
 * 优化胜利后的重开流程
+* 新增 Level intro 提示 UI（进关暂停 + 机制说明，按 Enter / Space 开始；倾向独立系统如 LevelIntroManager，不塞进 BallController）
+* L2 教学分布兜底：若 intro 提示后第一跳仍突兀，再单独做 L2 moving pool 限制
+* 清理 `movingIndices` 死参数（`setupDisappearPlatforms` 未使用的第二参数）
+* `while` 抽样退化风险：移动平台数接近总数时改 Fisher-Yates（当前数量级安全，留作未来触发条件）
 * 增加不同关卡难度
 * 增加音效
 * 优化 UI 显示
-* 继续开发完善游戏
