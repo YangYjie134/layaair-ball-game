@@ -677,15 +677,15 @@ export default class BallController extends Laya.Script {
 
     /**
      * 按当前关卡注册消失平台:仅 Level 3,1 块。
-     * 目标为第一块非移动的 Platform_*,天然不与 movingConfigs 重合。
-     * sorted 仅含 Platform_*(不含 Ground)。若找不到非移动平台,直接 return 不注册。
+     * 消失平台从全部 Platform_* 中随机选取,允许与移动平台重合。
+     * sorted 仅含 Platform_*(不含 Ground)。若找不到平台,直接 return 不注册。
      */
     private setupDisappearPlatforms(sorted: any[], movingIndices: Set<number>): void {
         this.disappearConfigs.clear();
         if (this.currentLevel !== 3) return;
 
-        const candidates = sorted.filter((_, index) => !movingIndices.has(index));
-        if (candidates.length === 0) return; // 无非移动平台,放弃注册
+        const candidates = sorted;
+        if (candidates.length === 0) return; // 无平台,放弃注册
 
         const target = candidates[Math.floor(Math.random() * candidates.length)];
         this.disappearConfigs.set(target, { state: 'idle', triggerAt: 0 });
