@@ -609,6 +609,11 @@ export default class BallController extends Laya.Script {
         // 记录上一块平台的中心 X，用于约束相邻距离
         let prevCenterX = this.startX;
         const movingCount = this.currentLevel === 3 ? 2 : this.currentLevel === 2 ? 1 : 0;
+        const movingIndices = new Set<number>();
+        const targetMovingCount = Math.min(movingCount, count);
+        while (movingIndices.size < targetMovingCount) {
+            movingIndices.add(Math.floor(Math.random() * count));
+        }
         let movingIndex = 0;
 
         for (let i = 0; i < count; i++) {
@@ -633,12 +638,6 @@ export default class BallController extends Laya.Script {
             if (i === 0) {
                 // Platform_1 特殊处理：避开出生点正下方，但留在可跳范围内
                 centerX = this.pickPlatform1CenterX(centerMin, centerMax, halfWidth);
-            } else if (movingCount > 0 && i === movingCount) {
-                // 移动平台正上方第一层固定平台：偏向移动平台行程右端，缩小有效起跳窗口。
-                const movingPlatform = sorted[i - 1];
-                const initialX = movingPlatform.x || 0;
-                const biasedCenterX = initialX + 220 + (Math.random() * 2 - 1) * 60;
-                centerX = Math.min(centerMax, Math.max(centerMin, biasedCenterX));
             } else {
                 if (lo > hi) { lo = centerMin; hi = centerMax; } // 兜底，避免空区间
                 centerX = lo + Math.random() * (hi - lo);
@@ -647,10 +646,9 @@ export default class BallController extends Laya.Script {
             platform.x = Math.round(centerX - halfWidth);
             prevCenterX = centerX;
 
-            // 移动平台分配（Level 2: 最低1个, Level 3: 最低2个）
-            // 平台数组已按 y 坐标降序排列（y 越大 = 位置越低）
-            // i === 0 是最低平台，i === 1 是次低平台
-            if (i < movingCount) {
+            // 移动平台分配（Level 2: 1个, Level 3: 2个）
+            // 由 movingIndices 在本轮随机抽样决定
+            if (movingIndices.has(i)) {
                 const leftInner = this.getWallInnerBound(this.leftWall, "left");
                 const rightInner = this.getWallInnerBound(this.rightWall, "right");
                 const rangeMin = Math.max(leftInner, platform.x - 300);
@@ -674,26 +672,24 @@ export default class BallController extends Laya.Script {
             this.repaintPlatformColor(p, "#ffffff");
         }
         // 再按当前关卡注册消失平台(此时 movingConfigs 已填充完毕)
-        this.setupDisappearPlatforms(sorted);
+        this.setupDisappearPlatforms(sorted, movingIndices);
     }
 
     /**
      * 按当前关卡注册消失平台:仅 Level 3,1 块。
-     * 目标为 sorted[movingCount],即第一块非移动的 Platform_*,天然不与 movingConfigs 重合。
-     * sorted 仅含 Platform_*(不含 Ground)。若数量不足 movingCount+1,直接 return 不注册。
+     * 目标为第一块非移动的 Platform_*,天然不与 movingConfigs 重合。
+     * sorted 仅含 Platform_*(不含 Ground)。若找不到非移动平台,直接 return 不注册。
      */
-    private setupDisappearPlatforms(sorted: any[]): void {
+    private setupDisappearPlatforms(sorted: any[], movingIndices: Set<number>): void {
         this.disappearConfigs.clear();
         if (this.currentLevel !== 3) return;
 
-        const movingCount = 2; // Level 3 固定 2 块移动平台,sorted[0]、sorted[1]
-        if (sorted.length < movingCount + 1) return; // 平台不足,放弃注册
+        const candidates = sorted.filter((_, index) => !movingIndices.has(index));
+        if (candidates.length === 0) return; // 无非移动平台,放弃注册
 
-        const target = sorted[movingCount]; // 第一块非移动平台
-        if (target) {
-            this.disappearConfigs.set(target, { state: 'idle', triggerAt: 0 });
-            this.repaintPlatformColor(target, "#00cc00");
-        }
+        const target = candidates[Math.floor(Math.random() * candidates.length)];
+        this.disappearConfigs.set(target, { state: 'idle', triggerAt: 0 });
+        this.repaintPlatformColor(target, "#00cc00");
     }
 
     // 为 Platform_1 选一个中心 X：避开出生点正下方，且不离出生点太远
