@@ -5,21 +5,35 @@ const { regClass } = Laya;
 // 导入分数管理器，用于同步分数、胜负状态和重开逻辑
 import { ScoreManager } from "./ScoreManager";
 
+/**
+ * 移动平台运行时状态配置
+ * 负责管理 Platform_* 平台的动态移动参数，包括运动方向、速度范围等。
+ * 每个需要移动的平台都对应一个 MovingConfig 实例，存储在 movingConfigs Map 中。
+ */
 interface MovingConfig {
-    axis: 'x';               // 第一版只做水平
-    speed: number;           // 像素/帧，建议默认值 1.5
-    rangeMin: number;        // 平台合法移动左边界（来自 randomizePlatforms 的 centerMin）
-    rangeMax: number;        // 平台合法移动右边界（来自 centerMax - platformWidth）
-    direction: 1 | -1;       // 当前方向，初始为 1
+    axis: 'x';               // 运动轴向，第一版仅支持水平运动
+    speed: number;           // 移动速度（像素/帧），建议默认值 1.5，数值越大移动越快
+    rangeMin: number;        // platform.x 能到达的最左位置（单位：像素），来自左墙内侧边界
+    rangeMax: number;        // platform.x 能到达的最右位置（单位：像素），来自右墙内侧边界减去平台宽度
+    direction: 1 | -1;       // 当前运动方向，1 表示向右，-1 表示向左，会在边界处自动翻转
 }
 
-// 消失平台状态:未触发 / 计时中 / 已消失
+/**
+ * 消失平台状态类型定义
+ * - idle：平台初始状态，未被踩上，保持绿色可见
+ * - counting：平台已被踩上，进入倒计时阶段，颜色从绿→黄→红逐步变化（800ms）
+ * - hidden：倒计时结束，平台消失不可见，停止后台移动（即使配有移动参数也不再更新位置）
+ */
 type DisappearState = 'idle' | 'counting' | 'hidden';
 
-// 消失平台单块状态
+/**
+ * 消失平台单块的运行时状态配置
+ * 负责追踪每个消失平台的当前生命周期状态和时间戳，仅 Level 3 关卡启用。
+ * 每个消失平台都对应一个 DisappearConfig 实例，存储在 disappearConfigs Map 中。
+ */
 interface DisappearConfig {
-    state: DisappearState; // 当前状态
-    triggerAt: number;     // 进入 counting 时的时间戳(ms),仅 counting 时有效
+    state: DisappearState; // 当前状态：idle（绿色待踩）→ counting（倒计时预警）→ hidden（消失隐藏）
+    triggerAt: number;     // 进入 counting 状态时的时间戳（ms），仅在 counting 时有效；用于计算消失倒计时进度
 }
 
 // 使用 regClass 装饰器注册脚本类，使其能在 Laya 编辑器中被识别
@@ -46,7 +60,17 @@ export default class BallController extends Laya.Script {
     private onGround: boolean = false;   // 当前帧是否站在地面/平台上。
 
     // ── 2. 碰撞计算状态：记录平台激活状态与死亡复活条件 ──
+    /**
+     * Platform_* 平台激活标志。初值 false。
+     * 从 Ground 起跳后自动置为 true，使 Platform_* 开始参与碰撞判定。
+     * 目的：避免回落 Ground 时被下面的 Platform_* 意外阻挡，保证跳跃逻辑清晰。
+     */
     private platformsActive: boolean = false; // 从 Ground 起跳后激活 Platform_* 碰撞
+    /**
+     * Ground 死亡区启用标志。初值 false。
+     * 第一次踩到任何 Platform_* 后自动置为 true，允许接触 Ground 触发复活逻辑。
+     * 目的：第一跳只能在 Ground 上，不会误踩下面的 Platform_* 后立即死亡。
+     */
     private deathEnabled: boolean = false;    // 第一次踩到 Platform_* 后，Ground 才算死亡区
     // 球的初始出生点X坐标
     private startX: number = 0;
@@ -73,10 +97,27 @@ export default class BallController extends Laya.Script {
     private levelText: any = null;
 
     private platforms: any[] = [];       // Platform_ 开头的节点和 Ground 都会放进这里。
+    /**
+     * 移动平台运行时配置映射表
+     * Key: 平台节点对象
+     * Value: 该平台对应的 MovingConfig 配置（包含速度、方向、rangeMin/rangeMax 等）
+     * 作用：updateMovingPlatform() 每帧查询此表，按 rangeMin/rangeMax 限制范围更新平台 x 坐标。
+     * 生命周期：randomizePlatforms() 时根据关卡等级随机填充，respawn() 时清空。
+     */
     private movingConfigs: Map<any, MovingConfig> = new Map();
-    // 踩上后延迟消失的毫秒数
+    /**
+     * 消失平台延迟消失时间常数（毫秒）
+     * 小球踩上消失平台后，平台进入 counting 状态，经过此延迟后进入 hidden 状态并消失。
+     * 同时支持颜色预警：0-20% 绿→黄，80-100% 黄→红，视觉提示玩家平台即将消失。
+     */
     private static readonly DISAPPEAR_DELAY: number = 800;
-    // 消失平台状态表,key 为平台节点,与 movingConfigs 同风格
+    /**
+     * 消失平台状态映射表
+     * Key: 平台节点对象
+     * Value: 该平台对应的 DisappearConfig 配置（包含状态、触发时间戳等）
+     * 作用：onUpdate() 中每帧检查计时进度，更新颜色预警，判断是否消失。
+     * 启用条件：仅 Level 3 关卡通过 setupDisappearPlatforms() 填充；低于 Level 3 时为空。
+     */
     private disappearConfigs: Map<any, DisappearConfig> = new Map();
 
     // 初始化时记录出生点并收集平台与墙体节点，后续碰撞逻辑将以这些节点为基准
@@ -233,9 +274,18 @@ export default class BallController extends Laya.Script {
     }
 
     /**
-     * 单向平台的核心判定：
-     * 只有"球正在下落，并且球底部从平台上方穿过平台顶面"时，才把球放到平台上。
-     * 这样平台侧面和底面不会产生碰撞，也就避开了顶角卡顿。
+     * 单向平台垂直碰撞检测与落地处理
+     *
+     * 核心原理：只有"球正在下落，且球底部从平台上方穿过平台顶面"时，才把球放到平台上。
+     * 这样平台侧面和底面不会产生碰撞，避开了 Box2D 顶角处的反复接触/分离卡顿。
+     *
+     * 流程：
+     * 1. 检查平台是否已消失（hidden）或未激活（Platform_* 但 platformsActive=false）
+     * 2. 计算球心、球半径、平台几何关系
+     * 3. 判断"穿过判定"：上一帧在平台上方，本帧在平台下方 → 视为跨过顶面
+     * 4. 若穿过且水平范围内，更新落地状态、速度、平台引用
+     * 5. Ground 平台落地时检查 deathEnabled 标志决定是否复活
+     * 6. Platform_* 落地时触发计分和消失平台计时
      */
     private resolveVerticalCollision(platform: any): void {
         // 已消失的平台不参与碰撞(visible=false 仅隐藏显示,必须在此显式跳过)
@@ -353,15 +403,25 @@ export default class BallController extends Laya.Script {
             if (this.vy < 0) this.vy = -this.vy * this.bounceY;
         }
 
-        // 额外保护：如果掉出屏幕底端，自动在空中复活        
+        // 额外保护：如果掉出屏幕底端，自动在空中复活
         // [死亡/重生系统] 掉出屏幕底部后自动重生。
         // 检测是否死亡
         this.checkDeath();
     }
 
+    /**
+     * 更新移动平台的水平位置
+     * 每帧对所有激活的 Platform_* 调用一次，按照 MovingConfig 参数更新其 x 坐标。
+     * 移动范围由 rangeMin 和 rangeMax 约束，触及边界时自动翻转方向。
+     *
+     * 特殊处理：消失平台消失后（state === 'hidden'）停止后台移动，
+     * 冻结平台在消失瞬间的 x 位置，避免隐形移动导致诡异行为。
+     *
+     * @param platform - 待更新的平台节点
+     */
     private updateMovingPlatform(platform: any): void {
         const config = this.movingConfigs.get(platform);
-        if (!config) return;    
+        if (!config) return;
         // [第3轮] hidden 的消失平台停止移动:冻结在消失瞬间的 x
         const dc = this.disappearConfigs.get(platform);
         if (dc && dc.state === 'hidden') return;
@@ -398,7 +458,22 @@ export default class BallController extends Laya.Script {
         }
     }
 
-    // 重新生成球的位置和状态
+    /**
+     * 复活逻辑：重置小球位置、速度、平台状态和消失平台配置
+     *
+     * 复活时刻：
+     * 1. 小球掉出屏幕底部（checkDeath()）
+     * 2. 小球落到 Ground 平台且 deathEnabled=true（resolveVerticalCollision()）
+     *
+     * 复活操作：
+     * - 小球位置/速度：恢复到出生点，清空速度向量
+     * - 平台碰撞状态：platformsActive=false（需重新从 Ground 起跳激活）
+     * - 死亡判定：deathEnabled=false（需重新踩 Platform_* 才启用 Ground 死亡）
+     * - 分数系统：调用 ScoreManager.reset()，清空本关分数和已踩平台记录
+     * - 消失平台：全部复原为 idle 状态（绿色可见），重置计时器，允许再次触发倒计时
+     *
+     * 此方法不修改 currentLevel，仅复活当前关卡。下一关切换由 restartGame() 负责。
+     */
     private respawn(): void {
         console.log("Ball died, respawn");
 
@@ -513,11 +588,14 @@ export default class BallController extends Laya.Script {
     }
 
     /**
-     * 边缘释放：
-     * 球站在平台上时，如果水平移动到平台有效范围外，就不再算作落地。
-     * 这样球能自然从平台边缘掉下去，而不是被硬卡在边缘。
+     * 检测球是否离开平台边缘并释放落地状态
+     *
+     * 边缘释放机制：球站在平台上时，如果水平移动到平台有效范围外（考虑容差），
+     * 立即清除落地状态，让球自然下落，避免被硬卡在平台边缘。
+     *
+     * 这个机制确保玩家能顺利跨越平台间的小间隙，同时保持单向平台的视觉直观性。
+     * 容差值（edgeGrace）为 2 像素或半径的 40%，防止过于敏感或不够敏感。
      */
-    // 检查球是否离开平台
     private releaseGroundIfUnsupported(): void {
         // 如果不在地面上或没有平台，则返回
         if (!this.onGround || !this.groundPlatform) return;
@@ -586,7 +664,24 @@ export default class BallController extends Laya.Script {
         this.randomizePlatforms();
     }
 
-    // 对 Platform_* 节点做分层随机布局，只改 x / y，不改其他属性
+    /**
+     * 对 Platform_* 平台做分层随机布局，生成关卡的随机平台配置
+     *
+     * 逻辑流程：
+     * 1. 过滤并按名字排序 Platform_* 节点，保证分层顺序稳定
+     * 2. 分配 Platform_1 ~ Platform_N 分别对应从低到高的 N 层
+     * 3. 对每层平台：
+     *    - Y 坐标：基础高度向上分层（Platform_1 最低 ≈620px），每层相隔 120px
+     *    - X 坐标：在合法范围内随机（保证整体在左右墙内），相邻平台中心距离限制在 ±300px
+     *    - Platform_1 特殊处理：避开出生点正下方，但留在可跳范围内
+     * 4. 按关卡等级随机分配移动平台（Level 2 选 1 个，Level 3 选 2 个）
+     *    - rangeMin 来自左墙内侧边界，rangeMax 来自右墙内侧边界减去平台宽度
+     *    - 填充 movingConfigs Map 以供 updateMovingPlatform() 使用
+     * 5. 调用 setupDisappearPlatforms() 注册消失平台配置（仅 Level 3 启用）
+     *
+     * 此方法仅改动平台节点的 x / y 坐标，不改其他属性（width/height/显示等）。
+     * 由 collectPlatforms()（初始化）和 restartGame()（下一关）调用。
+     */
     private randomizePlatforms(): void {
         // 只取 Platform_* 节点，按名字排序保证分层顺序稳定
         const sorted = this.platforms
@@ -679,9 +774,23 @@ export default class BallController extends Laya.Script {
     }
 
     /**
-     * 按当前关卡注册消失平台:仅 Level 3,1 块。
-     * 消失平台从全部 Platform_* 中随机选取,允许与移动平台重合。
-     * sorted 仅含 Platform_*(不含 Ground)。若找不到平台,直接 return 不注册。
+     * 按当前关卡等级注册消失平台，并允许与移动平台重合
+     *
+     * 启用条件：仅 Level 3 关卡有消失平台，Level 1 和 Level 2 返回空配置。
+     *
+     * 消失平台的来源和规则：
+     * - 从全部 Platform_* 中随机选取 1 块平台
+     * - 可与移动平台重合（同一块平台既能移动，又能消失）
+     * - 消失平台不额外生成，复用现有的 Platform_* 节点
+     *
+     * 初始化操作：
+     * - 清空 disappearConfigs 旧配置
+     * - 随机选中的平台初始化为 { state: 'idle', triggerAt: 0 }
+     * - 平台颜色设为绿色（#00cc00），表示待踩可用状态
+     *
+     * 参数说明：
+     * @param sorted - 已排序的 Platform_* 节点数组（仅含 Platform_*，不含 Ground）
+     * @param movingIndices - 本轮被分配为移动平台的平台索引集合（仅用于展示，消失平台可与其重合）
      */
     private setupDisappearPlatforms(sorted: any[], movingIndices: Set<number>): void {
         this.disappearConfigs.clear();
