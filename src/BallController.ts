@@ -339,7 +339,7 @@ export default class BallController extends Laya.Script {
                 // 已胜利时不要触发死亡复活：respawn() 会调用 ScoreManager.reset()
                 // 把 hasWon 一起清掉，导致胜利画面消失且 R 重开失效。
                 if (this.deathEnabled && !ScoreManager.instance.isWon()) {
-                    this.respawn();
+                    this.handleDeath();
                 }
                 return;
             }
@@ -454,8 +454,15 @@ export default class BallController extends Laya.Script {
     private checkDeath(): void {
         // 如果球Y位置超出屏幕下方100像素，则重新生成
         if (this.centerY > Laya.stage.height + 100 && !ScoreManager.instance.isWon()) {
-            this.respawn();
+            this.handleDeath();
         }
+    }
+
+    // 死亡代表当前随机挑战失败：先换同关布局，再复活到出生点。
+    private handleDeath(): void {
+        if (ScoreManager.instance.isWon()) return;
+        this.randomizePlatforms();
+        this.respawn();
     }
 
     /**
