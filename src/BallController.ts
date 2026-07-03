@@ -28,7 +28,7 @@ type DisappearState = 'idle' | 'counting' | 'hidden';
 
 /**
  * 消失平台单块的运行时状态配置
- * 负责追踪每个消失平台的当前生命周期状态和时间戳，仅 Level 3 关卡启用。
+ * 负责追踪每个消失平台的当前生命周期状态和时间戳，仅 Level 3/4 关卡启用。
  * 每个消失平台都对应一个 DisappearConfig 实例，存储在 disappearConfigs Map 中。
  */
 interface DisappearConfig {
@@ -93,10 +93,12 @@ export default class BallController extends Laya.Script {
 
     // ── 4. 关卡状态：记录当前关卡编号与界面显示内容 ──
     private currentLevel: number = 1;
-    private readonly maxLevel: number = 3;
+    private readonly maxLevel: number = 4;
     private levelText: any = null;
 
     private platforms: any[] = [];       // Platform_ 开头的节点和 Ground 都会放进这里。
+    private spikes: any[] = [];          // Level 4 静态尖刺，运行时动态创建。
+    private isHandlingDeath: boolean = false; // 共享死亡锁，避免同一帧重复触发死亡流程。
     /**
      * 移动平台运行时配置映射表
      * Key: 平台节点对象
@@ -116,7 +118,7 @@ export default class BallController extends Laya.Script {
      * Key: 平台节点对象
      * Value: 该平台对应的 DisappearConfig 配置（包含状态、触发时间戳等）
      * 作用：onUpdate() 中每帧检查计时进度，更新颜色预警，判断是否消失。
-     * 启用条件：仅 Level 3 关卡通过 setupDisappearPlatforms() 填充；低于 Level 3 时为空。
+     * 启用条件：仅 Level 3/4 关卡通过 setupDisappearPlatforms() 填充；低于 Level 3 时为空。
      */
     private disappearConfigs: Map<any, DisappearConfig> = new Map();
 
@@ -260,6 +262,7 @@ export default class BallController extends Laya.Script {
             this.updateMovingPlatform(platform);// 新增：先更新移动平台位置
             this.resolveVerticalCollision(platform);// 检测球是否与平台发生垂直碰撞，并处理落地逻辑
         }
+        this.checkHazards();
 
         // 平台是单向平台：只处理从上往下落到平台顶面，不处理平台侧面和底面。
         // 应用水平速度移动
@@ -458,11 +461,48 @@ export default class BallController extends Laya.Script {
         }
     }
 
+    // 检查小球是否碰到可见尖刺。只触发统一死亡流程，不改平台落地状态。
+    private checkHazards(): void {
+        if (ScoreManager.instance.isWon()) return;
+
+        const radius = this.getBallRadius();
+        const inset = Math.min(3, radius * 0.3);
+
+        for (const spike of this.spikes) {
+            if (!spike?.visible) continue;
+
+            const rectLeft = (spike.x || 0) + inset;
+            const rectRight = (spike.x || 0) + (spike.width || 0) - inset;
+            const rectTop = (spike.y || 0) + inset;
+            const rectBottom = (spike.y || 0) + (spike.height || 0) - inset;
+            if (rectLeft >= rectRight || rectTop >= rectBottom) continue;
+
+            const nearestX = Math.max(rectLeft, Math.min(this.centerX, rectRight));
+            const nearestY = Math.max(rectTop, Math.min(this.centerY, rectBottom));
+            const dx = this.centerX - nearestX;
+            const dy = this.centerY - nearestY;
+
+            if (dx * dx + dy * dy <= radius * radius) {
+                this.handleDeath();
+                return;
+            }
+        }
+    }
+
     // 死亡代表当前随机挑战失败：先换同关布局，再复活到出生点。
     private handleDeath(): void {
+        if (this.isHandlingDeath) return;
         if (ScoreManager.instance.isWon()) return;
-        this.randomizePlatforms();
-        this.respawn();
+
+        this.isHandlingDeath = true;
+
+        try {
+            this.randomizePlatforms();
+            this.randomizeHazards();
+            this.respawn();
+        } finally {
+            this.isHandlingDeath = false;
+        }
     }
 
     /**
@@ -524,6 +564,7 @@ export default class BallController extends Laya.Script {
 
         this.respawn();
         this.randomizePlatforms();
+        this.randomizeHazards();
         this.updateLevelText();
     }
 
@@ -667,8 +708,109 @@ export default class BallController extends Laya.Script {
             console.warn("⚠️ 场景中未找到任何以 Platform_ 开头的节点！");
         }
 
+        this.createHazardsIfNeeded();
         // 场景加载后随机一次平台位置
         this.randomizePlatforms();
+        this.randomizeHazards();
+    }
+
+    // 动态创建 Level 4 尖刺，挂到 Platform_* 相同的 parent，避免坐标系不一致。
+    private createHazardsIfNeeded(): void {
+        if (this.spikes.length > 0) return;
+
+        const platform = this.platforms.find((p: any) => {
+            return typeof p?.name === "string" && p.name.indexOf("Platform_") === 0;
+        });
+        const platformParent = platform?.parent;
+        if (!platformParent) return;
+
+        const children: any[] = platformParent?._children ?? platformParent?._childs ?? [];
+        const existingSpike = typeof platformParent.getChildByName === "function"
+            ? platformParent.getChildByName("Spike_1")
+            : children.find((child: any) => child?.name === "Spike_1");
+        if (existingSpike) {
+            existingSpike.visible = false;
+            this.spikes.push(existingSpike);
+            return;
+        }
+
+        const spike = new Laya.Sprite();
+        spike.name = "Spike_1";
+        spike.visible = false;
+        spike.width = 80;
+        spike.height = 8;
+        spike.zOrder = ((platform as any).zOrder || 0) + 1;
+        spike.graphics.clear();
+        spike.graphics.drawRect(0, 0, spike.width, spike.height, "#ff0000");
+
+        platformParent.addChild(spike);
+        this.spikes.push(spike);
+    }
+
+    // Level 4 尖刺随机化：只放在非移动、非消失的 Platform_2~Platform_5 上。
+    private randomizeHazards(): void {
+        this.createHazardsIfNeeded();
+
+        if (this.currentLevel !== 4) {
+            for (const spike of this.spikes) {
+                spike.visible = false;
+            }
+            return;
+        }
+
+        const spike = this.spikes[0];
+        if (!spike) return;
+
+        const radius = this.getBallRadius();
+        const spikeHeight = Math.max(8, Math.round(radius * 1.6));
+        const minSafeWidth = radius * 2 + 12;
+        const leftInner = this.getWallInnerBound(this.leftWall, "left");
+        const rightInner = this.getWallInnerBound(this.rightWall, "right");
+        const topWallBottom = this.getWallInnerBound(this.topWall, "top");
+
+        const candidates = this.platforms.filter((platform: any) => {
+            const name = platform?.name;
+            if (typeof name !== "string" || !/^Platform_[2-5]$/.test(name)) return false;
+            if (this.movingConfigs.has(platform)) return false;
+            if (this.disappearConfigs.has(platform)) return false;
+
+            const platformX = platform.x || 0;
+            const platformY = platform.y || 0;
+            const platformWidth = platform.width || 0;
+            const spikeWidth = Math.floor(platformWidth * 0.6);
+            const safeWidth = platformWidth - spikeWidth;
+
+            if (spikeWidth <= 0 || safeWidth < minSafeWidth) return false;
+            if (platformX < leftInner || platformX + platformWidth > rightInner) return false;
+            if (platformY - spikeHeight < topWallBottom) return false;
+            return true;
+        });
+
+        if (candidates.length === 0) {
+            spike.visible = false;
+            return;
+        }
+
+        const target = candidates[Math.floor(Math.random() * candidates.length)];
+        const targetWidth = target.width || 0;
+        const spikeWidth = Math.floor(targetWidth * 0.6);
+        const placeLeft = Math.random() < 0.5;
+        const spikeX = placeLeft ? target.x : target.x + targetWidth - spikeWidth;
+        const spikeY = target.y - spikeHeight;
+
+        if (spikeX < leftInner || spikeX + spikeWidth > rightInner || spikeY < topWallBottom) {
+            spike.visible = false;
+            return;
+        }
+
+        spike.x = Math.round(spikeX);
+        spike.y = Math.round(spikeY);
+        spike.width = spikeWidth;
+        spike.height = spikeHeight;
+        spike.zOrder = (target.zOrder || 0) + 1;
+        spike.visible = true;
+        spike.graphics.clear();
+        spike.graphics.drawRect(0, 0, spike.width, spike.height, "#ff0000");
     }
 
     /**
@@ -681,10 +823,10 @@ export default class BallController extends Laya.Script {
      *    - Y 坐标：基础高度向上分层（Platform_1 最低 ≈620px），每层相隔 120px
      *    - X 坐标：在合法范围内随机（保证整体在左右墙内），相邻平台中心距离限制在 ±300px
      *    - Platform_1 特殊处理：避开出生点正下方，但留在可跳范围内
-     * 4. 按关卡等级随机分配移动平台（Level 2 选 1 个，Level 3 选 2 个）
+     * 4. 按关卡等级随机分配移动平台（Level 2 选 1 个，Level 3/4 选 2 个）
      *    - rangeMin 来自左墙内侧边界，rangeMax 来自右墙内侧边界减去平台宽度
      *    - 填充 movingConfigs Map 以供 updateMovingPlatform() 使用
-     * 5. 调用 setupDisappearPlatforms() 注册消失平台配置（仅 Level 3 启用）
+     * 5. 调用 setupDisappearPlatforms() 注册消失平台配置（仅 Level 3/4 启用）
      *
      * 此方法仅改动平台节点的 x / y 坐标，不改其他属性（width/height/显示等）。
      * 由 collectPlatforms()（初始化）和 restartGame()（下一关）调用。
@@ -713,7 +855,7 @@ export default class BallController extends Laya.Script {
 
         // 记录上一块平台的中心 X，用于约束相邻距离
         let prevCenterX = this.startX;
-        const movingCount = this.currentLevel === 3 ? 2 : this.currentLevel === 2 ? 1 : 0;
+        const movingCount = this.currentLevel === 3 || this.currentLevel === 4 ? 2 : this.currentLevel === 2 ? 1 : 0;
         const movingIndices = new Set<number>();
         const targetMovingCount = Math.min(movingCount, count);
         while (movingIndices.size < targetMovingCount) {
@@ -751,7 +893,7 @@ export default class BallController extends Laya.Script {
             platform.x = Math.round(centerX - halfWidth);
             prevCenterX = centerX;
 
-            // 移动平台分配（Level 2: 1个, Level 3: 2个）
+            // 移动平台分配（Level 2: 1个, Level 3/4: 2个）
             // 由 movingIndices 在本轮随机抽样决定
             if (movingIndices.has(i)) {
                 const leftInner = this.getWallInnerBound(this.leftWall, "left");
@@ -783,7 +925,7 @@ export default class BallController extends Laya.Script {
     /**
      * 按当前关卡等级注册消失平台，并允许与移动平台重合
      *
-     * 启用条件：仅 Level 3 关卡有消失平台，Level 1 和 Level 2 返回空配置。
+     * 启用条件：仅 Level 3/4 关卡有消失平台，Level 1 和 Level 2 返回空配置。
      *
      * 消失平台的来源和规则：
      * - 从全部 Platform_* 中随机选取 1 块平台
@@ -801,7 +943,7 @@ export default class BallController extends Laya.Script {
      */
     private setupDisappearPlatforms(sorted: any[], movingIndices: Set<number>): void {
         this.disappearConfigs.clear();
-        if (this.currentLevel !== 3) return;
+        if (this.currentLevel !== 3 && this.currentLevel !== 4) return;
 
         const candidates = sorted;
         if (candidates.length === 0) return; // 无平台,放弃注册
