@@ -262,11 +262,12 @@ export default class BallController extends Laya.Script {
             this.updateMovingPlatform(platform);// 新增：先更新移动平台位置
             this.resolveVerticalCollision(platform);// 检测球是否与平台发生垂直碰撞，并处理落地逻辑
         }
-        this.checkHazards();
-
         // 平台是单向平台：只处理从上往下落到平台顶面，不处理平台侧面和底面。
         // 应用水平速度移动
         this.centerX += this.vx;
+        // 尖刺检测放在 X 位移之后，读取本帧最终球心 X（消除 ~5px 半帧滞后）；
+        // 仍在 clampToCanvas 之前，保持“尖刺死亡优先于掉落死亡”的同帧判定顺序。
+        this.checkHazards();
         this.releaseGroundIfUnsupported();// 检查球是否离开平台边缘，如果离开则取消落地状态，让球自然下落。
 
         // 最后处理顶墙、左右墙和掉出屏幕保护，再把结果写回节点一次。
