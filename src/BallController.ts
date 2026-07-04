@@ -99,6 +99,7 @@ export default class BallController extends Laya.Script {
     private platforms: any[] = [];       // Platform_ 开头的节点和 Ground 都会放进这里。
     private spikes: any[] = [];          // Level 4 静态尖刺，运行时动态创建。
     private readonly spikeWidthRatio: number = 0.45; // Level 4 尖刺占平台宽度比例，越小安全区越宽。
+    private disappearHighlightBar: any = null;
     private isHandlingDeath: boolean = false; // 共享死亡锁，避免同一帧重复触发死亡流程。
     /**
      * 移动平台运行时配置映射表
@@ -263,6 +264,7 @@ export default class BallController extends Laya.Script {
             this.updateMovingPlatform(platform);// 新增：先更新移动平台位置
             this.resolveVerticalCollision(platform);// 检测球是否与平台发生垂直碰撞，并处理落地逻辑
         }
+        this.syncDisappearHighlightBar();
         // 平台是单向平台：只处理从上往下落到平台顶面，不处理平台侧面和底面。
         // 应用水平速度移动
         this.centerX += this.vx;
@@ -438,6 +440,63 @@ export default class BallController extends Laya.Script {
             platform.x = config.rangeMin;
             config.direction = 1;
         }
+    }
+
+    private createDisappearHighlightBarIfNeeded(): void {
+        if (this.disappearHighlightBar) return;
+
+        const platform = this.platforms.find((p: any) => typeof p?.name === "string" && p.name.indexOf("Platform_") === 0);
+        const platformParent = platform?.parent;
+        if (!platformParent) return;
+
+        const bar = new Laya.Sprite();
+        bar.name = "DisappearHighlightBar";
+        bar.visible = false;
+        bar.width = 0;
+        bar.height = 4;
+        bar.zOrder = ((platform as any).zOrder || 0) + 1;
+
+        platformParent.addChild(bar);
+        this.disappearHighlightBar = bar;
+    }
+
+    private syncDisappearHighlightBar(): void {
+        this.createDisappearHighlightBarIfNeeded();
+
+        const bar = this.disappearHighlightBar;
+        if (!bar) return;
+
+        const entry = this.disappearConfigs.entries().next();
+        if (entry.done) {
+            bar.visible = false;
+            return;
+        }
+
+        const [target, cfg] = entry.value as [any, DisappearConfig];
+        if (!target || !cfg || cfg.state === 'hidden') {
+            bar.visible = false;
+            return;
+        }
+
+        let color = "#00ff00";
+        const cmds = target?.graphics?.cmds;
+        if (Array.isArray(cmds)) {
+            const drawRectCmd = Laya.DrawRectCmd
+                ? cmds.find((cmd: any) => cmd instanceof Laya.DrawRectCmd)
+                : cmds.find((cmd: any) => typeof cmd?.fillColor === "string");
+            if (typeof drawRectCmd?.fillColor === "string") {
+                color = drawRectCmd.fillColor;
+            }
+        }
+
+        bar.x = target.x;
+        bar.y = target.y;
+        bar.width = target.width || 0;
+        bar.height = 4;
+        bar.zOrder = (target.zOrder || 0) + 1;
+        bar.graphics.clear();
+        bar.graphics.drawRect(0, 0, bar.width, bar.height, color);
+        bar.visible = true;
     }
 
     // 按颜色重绘平台矩形填充,不重建绘制命令
