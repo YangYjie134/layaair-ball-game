@@ -930,7 +930,7 @@ export default class BallController extends Laya.Script {
      * 启用条件：仅 Level 3/4 关卡有消失平台，Level 1 和 Level 2 返回空配置。
      *
      * 消失平台的来源和规则：
-     * - 从全部 Platform_* 中随机选取 1 块平台
+     * - 从除最后一块外的 Platform_* 中随机选取 1 块平台
      * - 可与移动平台重合（同一块平台既能移动，又能消失）
      * - 消失平台不额外生成，复用现有的 Platform_* 节点
      *
@@ -947,7 +947,7 @@ export default class BallController extends Laya.Script {
         this.disappearConfigs.clear();
         if (this.currentLevel !== 3 && this.currentLevel !== 4) return;
 
-        const candidates = sorted;
+        const candidates = sorted.slice(0, -1);
         if (candidates.length === 0) return; // 无平台,放弃注册
 
         const target = candidates[Math.floor(Math.random() * candidates.length)];
