@@ -98,6 +98,7 @@ export default class BallController extends Laya.Script {
 
     private platforms: any[] = [];       // Platform_ 开头的节点和 Ground 都会放进这里。
     private spikes: any[] = [];          // Level 4 静态尖刺，运行时动态创建。
+    private readonly spikeWidthRatio: number = 0.45; // Level 4 尖刺占平台宽度比例，越小安全区越宽。
     private isHandlingDeath: boolean = false; // 共享死亡锁，避免同一帧重复触发死亡流程。
     /**
      * 移动平台运行时配置映射表
@@ -778,7 +779,7 @@ export default class BallController extends Laya.Script {
             const platformX = platform.x || 0;
             const platformY = platform.y || 0;
             const platformWidth = platform.width || 0;
-            const spikeWidth = Math.floor(platformWidth * 0.6);
+            const spikeWidth = Math.floor(platformWidth * this.spikeWidthRatio);
             const safeWidth = platformWidth - spikeWidth;
 
             if (spikeWidth <= 0 || safeWidth < minSafeWidth) return false;
@@ -794,7 +795,7 @@ export default class BallController extends Laya.Script {
 
         const target = candidates[Math.floor(Math.random() * candidates.length)];
         const targetWidth = target.width || 0;
-        const spikeWidth = Math.floor(targetWidth * 0.6);
+        const spikeWidth = Math.floor(targetWidth * this.spikeWidthRatio);
         const placeLeft = Math.random() < 0.5;
         const spikeX = placeLeft ? target.x : target.x + targetWidth - spikeWidth;
         const spikeY = target.y - spikeHeight;
