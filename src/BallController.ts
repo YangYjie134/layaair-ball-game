@@ -236,17 +236,17 @@ export default class BallController extends Laya.Script {
             if (cfg.state === 'counting') {
                 const elapsedMs = nowMs - cfg.triggerAt;
                 const progress = Math.max(0, Math.min(1, elapsedMs / BallController.DISAPPEAR_DELAY));
-                let warningColor = "#ffcc00";
+                let warningColor = "#ffff00";
 
                 if (progress < 0.2) {
                     // 0%~20%:绿色逐步过渡到黄色
                     const rate = progress / 0.2;
                     const red = Math.round(255 * rate);
-                    warningColor = "#" + ("0" + red.toString(16)).slice(-2) + "cc00";
+                    warningColor = "#" + ("0" + red.toString(16)).slice(-2) + "ff00";
                 } else if (progress >= 0.8) {
                     // 80%~100%:黄色逐步过渡到红色
                     const rate = (progress - 0.8) / 0.2;
-                    const green = Math.round(204 * (1 - rate));
+                    const green = Math.round(255 * (1 - rate));
                     warningColor = "#ff" + ("0" + green.toString(16)).slice(-2) + "00";
                 }
 
@@ -952,7 +952,7 @@ export default class BallController extends Laya.Script {
 
         const target = candidates[Math.floor(Math.random() * candidates.length)];
         this.disappearConfigs.set(target, { state: 'idle', triggerAt: 0 });
-        this.repaintPlatformColor(target, "#00cc00");
+        this.repaintPlatformColor(target, "#00ff00");
     }
 
     // 为 Platform_1 选一个中心 X：避开出生点正下方，且不离出生点太远
