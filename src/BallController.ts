@@ -808,7 +808,7 @@ export default class BallController extends Laya.Script {
         this.spikes.push(spike);
     }
 
-    // Level 4 尖刺随机化：只放在非移动、非消失的 Platform_2~Platform_5 上。
+    // Level 4 尖刺随机化：只放在非移动、非消失的 Platform_1~Platform_5 上。
     private randomizeHazards(): void {
         this.createHazardsIfNeeded();
 
@@ -831,7 +831,7 @@ export default class BallController extends Laya.Script {
 
         const candidates = this.platforms.filter((platform: any) => {
             const name = platform?.name;
-            if (typeof name !== "string" || !/^Platform_[2-5]$/.test(name)) return false;
+            if (typeof name !== "string" || !/^Platform_[1-5]$/.test(name)) return false;
             if (this.movingConfigs.has(platform)) return false;
             if (this.disappearConfigs.has(platform)) return false;
 
