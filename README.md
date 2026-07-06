@@ -1,214 +1,110 @@
 # LayaAir Ball Game
 
-这是一个使用 **LayaAir 3 + TypeScript** 制作的 2D 小球跳跃小游戏项目。
+A small 2D platformer built with **LayaAir 3** and **TypeScript**.
 
-项目目前已经完成基础游戏循环，包括小球移动、跳跃、自定义平台碰撞、平台得分、死亡复活、胜利判定、多关卡循环、移动平台、消失平台和代码绘制背景等功能。
+This project is a learning and portfolio project, not a commercial release. It focuses on custom platformer physics, readable gameplay rules, randomized platform layouts, and a compact level loop that can be extended over time.
 
-## 项目状态
+## Project Summary
 
-当前版本已经实现：
+The player controls a ball, jumps through platform layouts, scores by landing on platforms, and advances through four level rule sets. Later levels add moving platforms, disappearing platforms, and static spike hazards while keeping the core controls simple.
 
-* 小球左右移动
-* W / UP 跳跃
-* 自定义重力与速度控制
-* 单向平台碰撞检测
-* 平台边缘自然掉落
-* 平台得分系统
-* 同一平台只加一次分
-* 胜利条件判断
-* You Win 胜利提示
-* 死亡与复活机制
-* 胜利后按 R 进入下一关
-* Level 1 - 3 循环
-* 平台随机刷新
-* 移动平台（Level 2 / Level 3）
-* Level 3 消失平台
-* 消失平台颜色预警（绿 → 黄 → 红）
-* 移动 + 消失叠加平台（同一平台可同时移动并消失）
-* 消失平台 hidden 后停止移动（冻结在消失瞬间位置）
-* 代码绘制背景
-* 基础游戏循环
+The project currently uses code-driven gameplay logic and a code-drawn background rather than relying only on scene-editor behavior.
 
-## 技术栈
+## Current Status
 
-* LayaAir 3
-* TypeScript
-* Git / GitHub
-* VS Code
-* Node.js / TypeScript 编译检查
+- **Engine:** LayaAir 3
+- **Language:** TypeScript
+- **Genre:** 2D platformer prototype
+- **Current level loop:** Level 1 through Level 4, then loops back
+- **Latest completed gameplay round:** spike hazards can now be placed on the first platform
+- **Project stage:** playable learning prototype / portfolio project
 
-## 核心文件说明
+## Features
+
+- Custom ball movement with gravity, horizontal acceleration, and jumping.
+- Custom one-way platform collision for simple and controllable platformer behavior.
+- Platform scoring with one score per platform touch.
+- Death and respawn loop after falling back to danger areas or leaving the playable space.
+- Randomized platform layouts after death and level reset.
+- Moving platforms in later levels.
+- Disappearing platforms with brighter warning colors and a visual highlight bar.
+- Static spike hazards in Level 4.
+- Intro controls overlay at startup.
+- Code-drawn background.
+
+## Controls
+
+| Action | Input |
+| --- | --- |
+| Move left / right | `A` / `D` or left / right arrow |
+| Jump | `W` or up arrow |
+| Advance after win | `R` |
+| Dismiss intro overlay | `Space` |
+
+## Level Design
+
+| Level | Main Mechanics |
+| --- | --- |
+| Level 1 | Basic platform jumping |
+| Level 2 | Moving platforms |
+| Level 3 | Moving platforms and disappearing platforms |
+| Level 4 | Moving platforms, disappearing platforms, and static spike hazards |
+
+Current platform and hazard rules:
+
+- Platform layouts are randomized as part of the restart / respawn loop.
+- Spikes can appear on `Platform_1` through `Platform_5`.
+- Spikes do not appear on `Ground`, moving platforms, or disappearing platforms.
+- Disappearing platforms are not selected from the final platform.
+- Disappearing platforms warn the player with brighter colors and a highlight bar before becoming inactive.
+
+## Technical Notes
+
+The game uses custom one-way platform physics instead of relying fully on Box2D contacts for platform behavior. This keeps the rules focused on the platformer use case: the ball lands on platform tops, but platform sides and bottom contacts do not need full rigid-body handling.
+
+That direction was chosen after unstable platform-corner behavior made the built-in physics path harder to control for this prototype. The custom approach keeps collision rules, respawn behavior, and level reset behavior easier to reason about.
+
+Important runtime systems include:
+
+- `BallController.ts` for movement, platform collision, level progression, hazards, respawn, and platform randomization.
+- `ScoreManager.ts` for score tracking, win state, and platform score deduplication.
+- `BackgroundManager.ts` for the code-drawn background.
+- `IntroUI.ts` for the startup controls overlay.
+
+## Project Structure
 
 ```text
 src/
-├─ Main.ts                # 游戏入口，负责初始化背景和分数系统
-├─ BallController.ts      # 小球核心控制逻辑，包括移动、跳跃、碰撞、死亡复活、关卡推进等
-├─ ScoreManager.ts        # 得分系统，负责分数显示、平台去重得分、胜利判断和 reset
-└─ BackgroundManager.ts   # 使用代码绘制游戏背景
+├── Main.ts                # Entry point for startup systems
+├── BallController.ts      # Core player, platform, level, respawn, and hazard logic
+├── ScoreManager.ts        # Score and win-state management
+├── BackgroundManager.ts   # Code-drawn background
+└── IntroUI.ts             # Startup controls overlay
 ```
 
-## 核心机制说明
+## How to Run
 
-### Main.ts
+Open the project with **LayaAir IDE** and run the main scene from the editor.
 
-`Main.ts` 是游戏启动后的入口脚本，主要负责初始化全局系统。
+`package.json` currently does not define npm scripts, so this README intentionally does not document `npm run dev`, `npm start`, or similar commands.
 
-当前主要调用：
+## Development Notes
 
-* `BackgroundManager.draw(this.owner)`：绘制游戏背景
-* `ScoreManager.instance.init()`：初始化分数 UI
+- The project is intentionally small and code-readable.
+- Gameplay behavior is still prototype-level and may need balance passes.
+- The current architecture favors explicit TypeScript gameplay logic over broad engine abstraction.
+- Respawn, platform reset, and randomized layout behavior are core parts of the game loop.
 
-### BallController.ts
+## Roadmap
 
-`BallController.ts` 是当前项目最核心的脚本，负责小球相关的大部分游戏逻辑。
+- UI polish.
+- Sound effects and background music.
+- More level variety.
+- Difficulty balancing.
+- Better visual feedback.
 
-主要包含：
+## 中文简要说明
 
-* A / D 或左右方向键移动
-* W / UP 跳跃
-* `vx / vy` 速度控制
-* 自定义重力
-* 单向平台碰撞
-* 平台边缘自然掉落
-* Ground 死亡判断
-* 掉出屏幕死亡判断
-* `respawn()` 复活重置
-* 胜利后按 R 进入下一关
-* Level UI 显示
-* 平台随机刷新
-* 移动平台逻辑
-* 消失平台逻辑与颜色预警
+这是一个使用 **LayaAir 3 + TypeScript** 制作的 2D 小球平台跳跃项目，定位是学习和作品集展示项目，而不是商业化成品。
 
-### ScoreManager.ts
-
-`ScoreManager.ts` 负责分数和胜利状态。
-
-主要包含：
-
-* 显示 `Score`
-* 记录当前分数
-* 使用 `Set` 记录已经得过分的平台
-* 防止同一平台重复加分
-* 判断是否达到胜利分数
-* 显示 `You Win!`
-* `reset()` 重置分数、胜利状态和已得分平台记录
-
-### BackgroundManager.ts
-
-`BackgroundManager.ts` 负责绘制固定背景。
-
-当前背景是静态背景，不会随着玩家输入或小球移动变化。背景节点会放在较低层级，避免遮挡小球、平台和 UI。
-
-## 当前版本关键状态
-
-当前项目已经从早期 Box2D 碰撞尝试，转为自定义平台物理方案。
-
-### 从 Box2D 转向自定义物理的过程
-
-早期使用 Box2D 时，小球在平台顶部边角处会反复出现卡顿与异常接触，是整个早期开发中最顽固的问题。为解决它，先后尝试了多种思路：基于早期在学习碰撞检测时掌握的分离轴判定法（SAT）进行处理、尝试基于速度 / 动量的连续碰撞思路、在平台两端放置隐藏碰撞体、以及将矩形平台退化为线段或仅保留边缘碰撞体。这些方案均未能根除问题——例如隐藏碰撞体方案，因小球自身存在支点、且小球与平台之间无法做到无缝衔接而不成立；即便把平台退化成一条线，顶角卡顿依然存在。
-
-多种方案在更底层反复失败，据此推断该卡顿源于所用物理引擎（Box2D）的底层行为，已超出当前实现层可控范围。在权衡时间成本后，决定不再于 Box2D 框架内继续修补，转而自行实现 **自定义单向平台物理**：只处理"小球从上方下落穿过平台顶面"这一种碰撞，不处理平台侧面与底面。如此"顶角"这一判定根本不再发生，从架构上消除了问题。
-
-采用自定义物理的收益：
-
-* 更容易控制小球跳跃手感
-* 从根本上规避平台顶角卡顿
-* 更容易实现单向平台
-* 更适合当前 2D 小球跳跃游戏的 MVP 阶段
-
-决策反思：将顶角问题归因于引擎底层，是一个未经严格证明的推断，这里是在权衡时间成本后主动选择停止深挖、换用让问题不存在的架构，而非声称已彻底定位根因。当同一问题在多种方案下、且每种方案都在更底层失败时，换架构往往比在原框架内死磕更高效。
-
-### 当前核心状态
-
-* `vx`：横向速度
-* `vy`：纵向速度
-* `onGround`：小球是否站在可站立表面上
-* `groundPlatform`：当前支撑小球的平台
-* `previousY`：上一帧小球 Y 坐标
-* `platformsActive`：平台碰撞是否激活
-* `deathEnabled`：Ground 是否已经变成死亡区
-* `currentLevel`：当前关卡
-* `maxLevel`：最大关卡数
-
-## 当前游戏流程
-
-1. 游戏启动后，`Main.ts` 初始化背景和分数 UI。
-2. 小球出生在初始位置。
-3. 玩家使用 A / D 或左右方向键移动。
-4. 玩家使用 W / UP 跳跃。
-5. 从 Ground 起跳后，平台碰撞开始激活。
-6. 小球落到 `Platform_*` 后获得分数。
-7. 同一平台只会加一次分。
-8. 第一次踩到平台后，Ground 变成死亡区。
-9. 小球之后如果掉回 Ground，会触发复活。
-10. 小球掉出屏幕底部超过一定距离，也会触发复活。
-11. 分数达到胜利条件后显示 `You Win!`。
-12. 胜利后按 R 进入下一关。
-13. Level 超过最大关卡数后回到 Level 1。
-
-## 开发记录
-
-### 2026.6.23 02:33
-
-完成代码协作流程接入，并通过两个小重构验证流程：
-
-1. 删除 `BallController.ts` 中重复的 `ScoreManager` 初始化；
-2. 将 `ScoreManager.ts` 中的胜利分数 `5` 提取为 `winScore`；
-
-同时理解了自定义平台物理中的落地检测和离地检测逻辑。
-
-### 2026.6.28
-
-完成当前阶段核心功能整理：
-
-1. 完成 Ground 死亡时机优化；
-2. 将旧的 `gameStarted` 拆分为 `platformsActive` 和 `deathEnabled`；
-3. 实现第一跳失败落回 Ground 不死亡；
-4. 实现第一次踩到平台后 Ground 才成为死亡区；
-5. 新增 Level 1 - 3 循环；
-6. 胜利后按 R 进入下一关；
-7. 新关卡会重置小球、分数并随机刷新平台；
-8. 在 `respawn()` 中补充 `previousY = startY`，避免上一帧位置残留；
-9. 添加 TypeScript 本地编译检查；
-10. 整理四个核心脚本注释；
-11. 将跳跃输入简化为 W / UP。
-
-### 2026.6.29
-
-完成移动平台、消失平台功能及一处视觉 bug 修复：
-
-1. 完成移动平台功能：使用 `Map` 管理移动平台配置，Level 2 最低 1 个、Level 3 最低 2 个移动平台，并修复移动平台穿墙问题；小球不粘附移动平台；
-2. 新增消失平台机制：Level 3 中指定一块非移动的固定平台（`sorted[movingCount]`），小球从上方踩上后开始计时，短暂延迟后平台消失、不再参与碰撞，死亡复活或进入新关时恢复；（注：此行为已被 2026.6.30 三轮方案取代，现为全平台随机选取 + 允许与移动平台叠加。）
-3. 为消失平台增加颜色预警：平时为绿色，被踩后随倒计时由绿 → 黄 → 红渐变，提示平台即将消失；
-4. 修复一处**对象复用导致的颜色残留 bug**：平台节点跨关卡复用，消失平台的染色在换关时未被重置，导致颜色残留到其他关卡同位置的普通平台上，误导玩家。修复方式是在平台刷新（`randomizePlatforms()`）时，先将所有平台颜色统一重置回原始白色，再单独为当前关卡的消失平台上色——注意顺序必须"先刷白、再刷绿目标平台"，否则会把刚标绿的消失平台又覆盖成白色。
-
-复盘：渲染对象被跨关卡复用时，所有运行时修改过的视觉状态（颜色、透明度、可见性等）都必须在复用边界处显式重置——`visible` 容易记得重置，颜色这类属性容易被漏，被漏掉的那个属性就是 bug 所在。
-
-### 2026.6.30
-
-完成特殊平台三轮方案，实现移动 / 消失 / 叠加机制组合：
-
-1. 第 1 轮 — 随机分布：移动平台改用 `movingIndices` Set 随机抽样，替代原固定层选取；消失平台从池中随机取一；删除约 636 行旧偏置逻辑。
-   commit: `feat: randomize moving and disappearing platform selection`
-2. 第 2 轮 — 机制叠加：`setupDisappearPlatforms` 消失候选池由"非移动平台"放宽为"全部 Platform_*"，故意取消移动 / 消失互斥，同一平台可同时移动 + 消失。
-   commit: `feat: allow moving and disappearing platform overlap`
-3. 第 3 轮 — hidden 后停止移动：在 `updateMovingPlatform` 中，于 `if (!config) return;` 之后、`platform.x` 推进之前加入 hidden 检查，消失平台 `state === 'hidden'` 时提前 return，冻结在消失瞬间的 x。状态口径：`idle` / `counting` 继续移动（保留变色警告阶段），仅 `hidden` 停止。
-   commit: `fix: stop disappearing platform from moving after it hides`
-
-每帧顺序保证第 3 轮成立：`centerY += vy` → disappearConfigs 推进计时 / 变色 / 置 hidden → platforms 遍历 `updateMovingPlatform`，hidden 转换发生在移动更新之前。
-
-范围说明（如实记录）：hidden 期间平台已不可见 + 碰撞跳过，故 hidden 期间无可见差异；第 3 轮唯一可观察到的效果是同关 respawn——`respawn()` 恢复 visible 但不重置 `platform.x`，故修复后消失平台在原位重现，而非隐身期间漂移后重现。
-
-设计决策（L2 移动平台分布）：L2 保留"全平台随机"，记为接受的预期行为，非 bug。曾考虑限制为低层池 `{1, 2}` 以平滑教学节奏，最终改为后期用 Level intro 提示 UI 解决"认知突兀"，生成规则维持现状；若 UI 提示上线后实测 L2 第一跳仍突兀，再单独做 pool 限制（兜底项）。
-
-## 后续计划
-
-* 调整 Score UI 和 Level UI 间距
-* 优化胜利后的重开流程
-* 新增 Level intro 提示 UI（进关暂停 + 机制说明，按 Enter / Space 开始；倾向独立系统如 LevelIntroManager，不塞进 BallController）
-* L2 教学分布兜底：若 intro 提示后第一跳仍突兀，再单独做 L2 moving pool 限制
-* 清理 `movingIndices` 死参数（`setupDisappearPlatforms` 未使用的第二参数）
-* `while` 抽样退化风险：移动平台数接近总数时改 Fisher-Yates（当前数量级安全，留作未来触发条件）
-* 增加不同关卡难度
-* 增加音效
-* 优化 UI 显示
+当前已经实现 Level 1 到 Level 4 的循环玩法，包括基础跳跃、移动平台、消失平台、静态尖刺、死亡复活、平台随机刷新、开场操作提示和代码绘制背景。项目重点是用自定义单向平台物理来保持平台跳跃规则简单、可控，并方便继续扩展关卡机制。
