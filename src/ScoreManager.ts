@@ -1,4 +1,5 @@
 declare var Laya: any;
+import { SfxManager } from "./SfxManager";
 
 // 分数管理器：负责游戏分数的计算、显示和获胜判定
 export class ScoreManager {
@@ -174,6 +175,7 @@ export class ScoreManager {
 
         // 标记为已获胜
         this.hasWon = true;
+        SfxManager.playClear();
         // 显示获胜文本
         this.showWinText();
 

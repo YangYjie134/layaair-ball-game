@@ -4,6 +4,7 @@ declare const Laya: any;
 const { regClass } = Laya;
 // 导入分数管理器，用于同步分数、胜负状态和重开逻辑
 import { ScoreManager } from "./ScoreManager";
+import { SfxManager } from "./SfxManager";
 
 /**
  * 移动平台运行时状态配置
@@ -212,6 +213,7 @@ export default class BallController extends Laya.Script {
             }
             // 设置向上的初始速度
             this.vy = -this.jumpStrength;
+            SfxManager.playJump();
             // 标记不在地面
             this.onGround = false;
             // 清除平台参考
@@ -556,6 +558,7 @@ export default class BallController extends Laya.Script {
         if (ScoreManager.instance.isWon()) return;
 
         this.isHandlingDeath = true;
+        SfxManager.playDeath();
 
         try {
             this.randomizePlatforms();
