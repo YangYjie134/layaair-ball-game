@@ -41,6 +41,15 @@ The project currently uses code-driven gameplay logic and a code-drawn backgroun
 | Advance after win | `R` |
 | Dismiss intro overlay | `Space` |
 
+## Audio Credits
+
+* Background music: Ending / Credits, selected from **5 Chiptunes (Action)**
+
+  * Composer: Juhani Junkala
+  * Published on OpenGameArt as: SubspaceAudio
+  * Source: OpenGameArt
+  * License: CC0 / Public Domain
+
 ## Level Design
 
 | Level | Main Mechanics |

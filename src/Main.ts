@@ -10,6 +10,7 @@ import { BackgroundManager } from "./BackgroundManager";
 // 分数管理器负责维护分数、胜负状态和界面显示
 import { ScoreManager } from "./ScoreManager";
 import { IntroUI } from "./IntroUI";
+import { BgmManager } from "./BgmManager";
 // 使用 regClass 注册脚本类，让 Laya 编辑器能够识别当前脚本
 @regClass()
 
@@ -22,8 +23,21 @@ export class Main extends Laya.Script {
         BackgroundManager.draw(this.owner);
         ScoreManager.instance.init();
         IntroUI.show();
+        Laya.stage.on(Laya.Event.KEY_DOWN, this, this.onStartBgmKeyDown);
         // 在浏览器控制台输出文字
         // 用来测试脚本是否成功运行
         console.log("Game start");
+    }
+
+    private onStartBgmKeyDown(event: any): void {
+        const keyCode = event ? event.keyCode : null;
+        const key = event ? event.key : "";
+        const isStartKey = keyCode === 32 || key === " " || key === "Space";
+        if (!isStartKey) {
+            return;
+        }
+
+        Laya.stage.off(Laya.Event.KEY_DOWN, this, this.onStartBgmKeyDown);
+        BgmManager.playBgm();
     }
 }
