@@ -16,6 +16,7 @@ import { BgmManager } from "./BgmManager";
 
 // 创建 Main 类，继承 Laya.Script 后才能挂载到场景节点上
 export class Main extends Laya.Script {
+    private muteKeyHeld: boolean = false;
 
     // 脚本启动时执行一次，类似游戏的开始函数
     onStart() {
@@ -24,6 +25,8 @@ export class Main extends Laya.Script {
         ScoreManager.instance.init();
         IntroUI.show();
         Laya.stage.on(Laya.Event.KEY_DOWN, this, this.onStartBgmKeyDown);
+        Laya.stage.on(Laya.Event.KEY_DOWN, this, this.onMuteKeyDown);
+        Laya.stage.on(Laya.Event.KEY_UP, this, this.onMuteKeyUp);
         // 在浏览器控制台输出文字
         // 用来测试脚本是否成功运行
         console.log("Game start");
@@ -39,5 +42,27 @@ export class Main extends Laya.Script {
 
         Laya.stage.off(Laya.Event.KEY_DOWN, this, this.onStartBgmKeyDown);
         BgmManager.playBgm();
+    }
+
+    private onMuteKeyDown(event: any): void {
+        const isMuteKey = event.keyCode === 77 || event.key === "m" || event.key === "M";
+        if (!isMuteKey) {
+            return;
+        }
+
+        if (this.muteKeyHeld) {
+            return;
+        }
+
+        this.muteKeyHeld = true;
+        Laya.SoundManager.muted = !Laya.SoundManager.muted;
+        console.log("Muted:", Laya.SoundManager.muted);
+    }
+
+    private onMuteKeyUp(event: any): void {
+        const isMuteKey = event.keyCode === 77 || event.key === "m" || event.key === "M";
+        if (isMuteKey) {
+            this.muteKeyHeld = false;
+        }
     }
 }
