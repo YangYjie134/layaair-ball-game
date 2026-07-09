@@ -906,8 +906,8 @@ export default class BallController extends Laya.Script {
         if (count === 0) return;
 
         // 可玩区域 X 范围：左右墙内侧（与 getWallInnerBound 保持一致）
-        const xMin = 30;
-        const xMax = 1304;
+        const xMin = this.getWallInnerBound(this.leftWall, "left");
+        const xMax = this.getWallInnerBound(this.rightWall, "right");
 
         // Y 轴：固定基础高度 + 小幅抖动。Platform_1 最低(Y≈620)，每层向上抬约 120。
         const baseY = 620;       // Platform_1 基础高度
