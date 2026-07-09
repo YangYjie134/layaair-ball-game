@@ -43,12 +43,14 @@ The project currently uses code-driven gameplay logic and a code-drawn backgroun
 
 ## Audio Credits
 
-* Background music: Ending / Credits, selected from **5 Chiptunes (Action)**
+All audio is CC0 (public domain) by Juhani Junkala (published on OpenGameArt as
+SubspaceAudio). Attribution is not legally required under CC0, but is provided here
+as good practice. See `assets/AUDIO_SOURCES.md` for per-file source traceability.
 
-  * Composer: Juhani Junkala
-  * Published on OpenGameArt as: SubspaceAudio
-  * Source: OpenGameArt
-  * License: CC0 / Public Domain
+* **Background music** — "Ending / Credits", from *5 Chiptunes (Action)*
+  * https://opengameart.org/content/5-chiptunes-action  (CC0)
+* **Sound effects** (jump / death / level-clear) — from *512 Sound Effects (8-bit style)*
+  * https://opengameart.org/content/512-sound-effects-8-bit-style  (CC0)
 
 ## Level Design
 
