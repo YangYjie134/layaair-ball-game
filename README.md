@@ -31,6 +31,9 @@ The project currently uses code-driven gameplay logic and a code-drawn backgroun
 - Static spike hazards in Level 4.
 - Intro controls overlay at startup.
 - Code-drawn background.
+- Background music that starts on the first key press (browser autoplay-friendly).
+- Sound effects for jump, death, and level-clear.
+- Global mute toggle for music and sound effects.
 
 ## Controls
 
@@ -39,13 +42,16 @@ The project currently uses code-driven gameplay logic and a code-drawn backgroun
 | Move left / right | `A` / `D` or left / right arrow |
 | Jump | `W` or up arrow |
 | Advance after win | `R` |
-| Dismiss intro overlay | `Space` |
+| Dismiss intro overlay / start music | `Space` |
+| Mute / unmute all audio | `M` |
 
 ## Audio Credits
 
 All audio is CC0 (public domain) by Juhani Junkala (published on OpenGameArt as
 SubspaceAudio). Attribution is not legally required under CC0, but is provided here
-as good practice. See `assets/AUDIO_SOURCES.md` for per-file source traceability.
+as good practice. See `assets/AUDIO_SOURCES.md` for per-file sound-effect provenance
+(waveform verification and conversion notes). Background-music provenance is recorded
+in the credit below.
 
 * **Background music** — "Ending / Credits", from *5 Chiptunes (Action)*
   * https://opengameart.org/content/5-chiptunes-action  (CC0)
@@ -81,6 +87,8 @@ Important runtime systems include:
 - `ScoreManager.ts` for score tracking, win state, and platform score deduplication.
 - `BackgroundManager.ts` for the code-drawn background.
 - `IntroUI.ts` for the startup controls overlay.
+- `BgmManager.ts` for background-music start / stop and volume.
+- `SfxManager.ts` for jump, death, and level-clear sound effects.
 
 ## Project Structure
 
@@ -90,7 +98,9 @@ src/
 ├── BallController.ts      # Core player, platform, level, respawn, and hazard logic
 ├── ScoreManager.ts        # Score and win-state management
 ├── BackgroundManager.ts   # Code-drawn background
-└── IntroUI.ts             # Startup controls overlay
+├── IntroUI.ts             # Startup controls overlay
+├── BgmManager.ts          # Background music start / stop / volume
+└── SfxManager.ts          # Jump, death, and level-clear sound effects
 ```
 
 ## How to Run
@@ -106,10 +116,14 @@ Open the project with **LayaAir IDE** and run the main scene from the editor.
 - The current architecture favors explicit TypeScript gameplay logic over broad engine abstraction.
 - Respawn, platform reset, and randomized layout behavior are core parts of the game loop.
 
+## Known Limitations
+
+- Background music starts only after the first keyboard input, due to browser autoplay policies.
+- The project currently runs from the LayaAir IDE and does not yet ship a standalone web build.
+
 ## Roadmap
 
 - UI polish.
-- Sound effects and background music.
 - More level variety.
 - Difficulty balancing.
 - Better visual feedback.
@@ -118,4 +132,4 @@ Open the project with **LayaAir IDE** and run the main scene from the editor.
 
 这是一个使用 **LayaAir 3 + TypeScript** 制作的 2D 小球平台跳跃项目，定位是学习和作品集展示项目，而不是商业化成品。
 
-当前已经实现 Level 1 到 Level 4 的循环玩法，包括基础跳跃、移动平台、消失平台、静态尖刺、死亡复活、平台随机刷新、开场操作提示和代码绘制背景。项目重点是用自定义单向平台物理来保持平台跳跃规则简单、可控，并方便继续扩展关卡机制。
+当前已经实现 Level 1 到 Level 4 的循环玩法，包括基础跳跃、移动平台、消失平台、静态尖刺、死亡复活、平台随机刷新、开场操作提示和代码绘制背景。音频方面已加入背景音乐、跳跃/死亡/过关音效，以及 M 键全局静音。项目重点是用自定义单向平台物理来保持平台跳跃规则简单、可控，并方便继续扩展关卡机制。
