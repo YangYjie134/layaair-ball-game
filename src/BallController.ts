@@ -917,16 +917,28 @@ export default class BallController extends Laya.Script {
     }
 
     private isAffectedJumpFair(sourcePlatform: any, targetPlatform: any, hostPlatform: any, spikeSide: SpikeSide, spikeWidth: number): boolean {
-        if (!this.disappearConfigs.has(targetPlatform)) return true;
+        const reach = this.estimateJumpReachBySimulation(sourcePlatform.y || 0, targetPlatform.y || 0);
+
+        if (this.disappearConfigs.has(targetPlatform)) {
+            const requiredX = this.getWorstCaseRequiredX(sourcePlatform, targetPlatform, hostPlatform, spikeSide, spikeWidth);
+            if (requiredX === null) return false;
+
+            const safetyFrameMargin = 2;
+            const horizontalSafetyMargin = this.maxSpeedX * safetyFrameMargin;
+            return requiredX <= reach - horizontalSafetyMargin;
+        }
+
+        if (this.movingConfigs.has(targetPlatform)) {
+            const bestCaseRequiredX = this.getBestCaseRequiredX(sourcePlatform, targetPlatform, hostPlatform, spikeSide, spikeWidth);
+            if (bestCaseRequiredX === null) return false;
+
+            return bestCaseRequiredX <= reach;
+        }
 
         const requiredX = this.getWorstCaseRequiredX(sourcePlatform, targetPlatform, hostPlatform, spikeSide, spikeWidth);
         if (requiredX === null) return false;
 
-        const reach = this.estimateJumpReachBySimulation(sourcePlatform.y || 0, targetPlatform.y || 0);
-        const safetyFrameMargin = 2;
-        const horizontalSafetyMargin = this.maxSpeedX * safetyFrameMargin;
-
-        return requiredX <= reach - horizontalSafetyMargin;
+        return requiredX <= reach;
     }
 
     private getWorstCaseRequiredX(sourcePlatform: any, targetPlatform: any, hostPlatform: any, spikeSide: SpikeSide, spikeWidth: number): number | null {
@@ -957,6 +969,37 @@ export default class BallController extends Laya.Script {
         }
 
         return worstRequiredX;
+    }
+
+    private getBestCaseRequiredX(sourcePlatform: any, targetPlatform: any, hostPlatform: any, spikeSide: SpikeSide, spikeWidth: number): number | null {
+        const sourceXs = this.getPlatformXOptions(sourcePlatform);
+        const targetXs = this.getPlatformXOptions(targetPlatform);
+        let bestRequiredX: number | null = null;
+
+        for (const sourceX of sourceXs) {
+            const sourceInterval = this.getPlatformSafeCenterInterval(
+                sourcePlatform,
+                sourcePlatform === hostPlatform ? spikeSide : undefined,
+                sourcePlatform === hostPlatform ? spikeWidth : undefined,
+                sourceX
+            );
+            if (!sourceInterval) continue;
+
+            for (const targetX of targetXs) {
+                const targetInterval = this.getPlatformSafeCenterInterval(
+                    targetPlatform,
+                    targetPlatform === hostPlatform ? spikeSide : undefined,
+                    targetPlatform === hostPlatform ? spikeWidth : undefined,
+                    targetX
+                );
+                if (!targetInterval) continue;
+
+                const requiredX = this.getCenterIntervalGap(sourceInterval, targetInterval);
+                bestRequiredX = bestRequiredX === null ? requiredX : Math.min(bestRequiredX, requiredX);
+            }
+        }
+
+        return bestRequiredX;
     }
 
     private getPlatformXOptions(platform: any): number[] {
