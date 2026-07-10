@@ -26,6 +26,7 @@ interface MovingConfig {
  * - hidden：倒计时结束，平台消失不可见，停止后台移动（即使配有移动参数也不再更新位置）
  */
 type DisappearState = 'idle' | 'counting' | 'hidden';
+type SpikeSide = 'left' | 'right';
 
 /**
  * 消失平台单块的运行时状态配置
@@ -832,11 +833,15 @@ export default class BallController extends Laya.Script {
         const rightInner = this.getWallInnerBound(this.rightWall, "right");
         const topWallBottom = this.getWallInnerBound(this.topWall, "top");
 
-        const candidates = this.platforms.filter((platform: any) => {
+        const sorted = this.getSortedGamePlatforms();
+        const candidates: Array<{ platform: any; side: SpikeSide; spikeWidth: number }> = [];
+        const spikeSides: SpikeSide[] = ['left', 'right'];
+
+        for (const platform of sorted) {
             const name = platform?.name;
-            if (typeof name !== "string" || !/^Platform_[1-5]$/.test(name)) return false;
-            if (this.movingConfigs.has(platform)) return false;
-            if (this.disappearConfigs.has(platform)) return false;
+            if (typeof name !== "string" || !/^Platform_[1-5]$/.test(name)) continue;
+            if (this.movingConfigs.has(platform)) continue;
+            if (this.disappearConfigs.has(platform)) continue;
 
             const platformX = platform.x || 0;
             const platformY = platform.y || 0;
@@ -844,22 +849,27 @@ export default class BallController extends Laya.Script {
             const spikeWidth = Math.floor(platformWidth * this.spikeWidthRatio);
             const safeWidth = platformWidth - spikeWidth;
 
-            if (spikeWidth <= 0 || safeWidth < minSafeWidth) return false;
-            if (platformX < leftInner || platformX + platformWidth > rightInner) return false;
-            if (platformY - spikeHeight < topWallBottom) return false;
-            return true;
-        });
+            if (spikeWidth <= 0 || safeWidth < minSafeWidth) continue;
+            if (platformX < leftInner || platformX + platformWidth > rightInner) continue;
+            if (platformY - spikeHeight < topWallBottom) continue;
+
+            for (const side of spikeSides) {
+                if (this.isSpikePlacementFair(platform, side, sorted, spikeWidth)) {
+                    candidates.push({ platform, side, spikeWidth });
+                }
+            }
+        }
 
         if (candidates.length === 0) {
             spike.visible = false;
             return;
         }
 
-        const target = candidates[Math.floor(Math.random() * candidates.length)];
+        const placement = candidates[Math.floor(Math.random() * candidates.length)];
+        const target = placement.platform;
         const targetWidth = target.width || 0;
-        const spikeWidth = Math.floor(targetWidth * this.spikeWidthRatio);
-        const placeLeft = Math.random() < 0.5;
-        const spikeX = placeLeft ? target.x : target.x + targetWidth - spikeWidth;
+        const spikeWidth = placement.spikeWidth;
+        const spikeX = placement.side === 'left' ? target.x : target.x + targetWidth - spikeWidth;
         const spikeY = target.y - spikeHeight;
 
         if (spikeX < leftInner || spikeX + spikeWidth > rightInner || spikeY < topWallBottom) {
@@ -875,6 +885,159 @@ export default class BallController extends Laya.Script {
         spike.visible = true;
         spike.graphics.clear();
         spike.graphics.drawRect(0, 0, spike.width, spike.height, "#ff0000");
+    }
+
+    private getSortedGamePlatforms(): any[] {
+        return this.platforms
+            .filter((p: any) => typeof p.name === "string" && p.name.indexOf("Platform_") === 0)
+            .sort((a: any, b: any) => (a.name as string).localeCompare(b.name));
+    }
+
+    private isSpikePlacementFair(hostPlatform: any, spikeSide: SpikeSide, sorted: any[], spikeWidth: number): boolean {
+        const hostIndex = sorted.indexOf(hostPlatform);
+        if (hostIndex < 0) return true;
+
+        const ground = this.platforms.find((p: any) => p?.name === "Ground") ?? null;
+        const prevNeighbor = hostIndex > 0 ? sorted[hostIndex - 1] : ground;
+        const nextNeighbor = hostIndex < sorted.length - 1 ? sorted[hostIndex + 1] : null;
+
+        if (prevNeighbor && this.isNeighborOnSide(hostPlatform, prevNeighbor, spikeSide)) {
+            if (!this.isAffectedJumpFair(prevNeighbor, hostPlatform, hostPlatform, spikeSide, spikeWidth)) {
+                return false;
+            }
+        }
+
+        if (nextNeighbor && this.isNeighborOnSide(hostPlatform, nextNeighbor, spikeSide)) {
+            if (!this.isAffectedJumpFair(hostPlatform, nextNeighbor, hostPlatform, spikeSide, spikeWidth)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private isAffectedJumpFair(sourcePlatform: any, targetPlatform: any, hostPlatform: any, spikeSide: SpikeSide, spikeWidth: number): boolean {
+        if (!this.disappearConfigs.has(targetPlatform)) return true;
+
+        const requiredX = this.getWorstCaseRequiredX(sourcePlatform, targetPlatform, hostPlatform, spikeSide, spikeWidth);
+        if (requiredX === null) return false;
+
+        const reach = this.estimateJumpReachBySimulation(sourcePlatform.y || 0, targetPlatform.y || 0);
+        const safetyFrameMargin = 2;
+        const horizontalSafetyMargin = this.maxSpeedX * safetyFrameMargin;
+
+        return requiredX <= reach - horizontalSafetyMargin;
+    }
+
+    private getWorstCaseRequiredX(sourcePlatform: any, targetPlatform: any, hostPlatform: any, spikeSide: SpikeSide, spikeWidth: number): number | null {
+        const sourceXs = this.getPlatformXOptions(sourcePlatform);
+        const targetXs = this.getPlatformXOptions(targetPlatform);
+        let worstRequiredX = 0;
+
+        for (const sourceX of sourceXs) {
+            const sourceInterval = this.getPlatformSafeCenterInterval(
+                sourcePlatform,
+                sourcePlatform === hostPlatform ? spikeSide : undefined,
+                sourcePlatform === hostPlatform ? spikeWidth : undefined,
+                sourceX
+            );
+            if (!sourceInterval) return null;
+
+            for (const targetX of targetXs) {
+                const targetInterval = this.getPlatformSafeCenterInterval(
+                    targetPlatform,
+                    targetPlatform === hostPlatform ? spikeSide : undefined,
+                    targetPlatform === hostPlatform ? spikeWidth : undefined,
+                    targetX
+                );
+                if (!targetInterval) return null;
+
+                worstRequiredX = Math.max(worstRequiredX, this.getCenterIntervalGap(sourceInterval, targetInterval));
+            }
+        }
+
+        return worstRequiredX;
+    }
+
+    private getPlatformXOptions(platform: any): number[] {
+        const config = this.movingConfigs.get(platform);
+        if (!config) return [platform.x || 0];
+
+        const options: number[] = [];
+        for (const x of [config.rangeMin, config.rangeMax]) {
+            if (typeof x === "number" && isFinite(x) && options.indexOf(x) < 0) {
+                options.push(x);
+            }
+        }
+
+        return options.length > 0 ? options : [platform.x || 0];
+    }
+
+    private getPlatformSafeCenterInterval(platform: any, spikeSide?: SpikeSide, spikeWidth?: number, xOverride?: number): [number, number] | null {
+        const radius = this.getBallRadius();
+        const platformX = xOverride !== undefined ? xOverride : platform.x || 0;
+        const platformWidth = platform.width || 0;
+        const spikeBlockWidth = spikeWidth || 0;
+
+        let left = platformX + radius;
+        let right = platformX + platformWidth - radius;
+
+        if (spikeSide === 'left') {
+            left = platformX + spikeBlockWidth + radius;
+        } else if (spikeSide === 'right') {
+            right = platformX + platformWidth - spikeBlockWidth - radius;
+        }
+
+        if (left >= right) return null;
+        return [left, right];
+    }
+
+    private getCenterIntervalGap(sourceInterval: [number, number], targetInterval: [number, number]): number {
+        if (targetInterval[0] > sourceInterval[1]) {
+            return targetInterval[0] - sourceInterval[1];
+        }
+        if (sourceInterval[0] > targetInterval[1]) {
+            return sourceInterval[0] - targetInterval[1];
+        }
+        return 0;
+    }
+
+    private isNeighborOnSide(hostPlatform: any, neighborPlatform: any, side: SpikeSide): boolean {
+        const radius = this.getBallRadius();
+        const hostCenter = (hostPlatform.x || 0) + (hostPlatform.width || 0) / 2;
+        const neighborCenter = (neighborPlatform.x || 0) + (neighborPlatform.width || 0) / 2;
+        const delta = neighborCenter - hostCenter;
+
+        if (Math.abs(delta) < radius) return false;
+        return side === 'left' ? delta <= -radius : delta >= radius;
+    }
+
+    private estimateJumpReachBySimulation(sourceY: number, targetY: number): number {
+        const radius = this.getBallRadius();
+        let centerY = sourceY - radius;
+        let vy = -this.jumpStrength;
+        let horizontalSteps = 0;
+        const maxFrames = 120;
+
+        // This mirrors onUpdate(): jump sets vy, then vertical landing is checked
+        // before the frame's horizontal movement is counted.
+        for (let frame = 0; frame < maxFrames; frame++) {
+            const previousY = centerY;
+            centerY += vy;
+
+            const previousBottom = previousY + radius;
+            const currentBottom = centerY + radius;
+            const crossedTop = previousBottom <= targetY + 0.5 && currentBottom >= targetY - 0.5;
+
+            if (vy >= 0 && crossedTop) {
+                return horizontalSteps * this.maxSpeedX;
+            }
+
+            horizontalSteps++;
+            vy += this.gravity;
+        }
+
+        return -1;
     }
 
     /**
