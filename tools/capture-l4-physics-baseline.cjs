@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const { execFileSync } = require("node:child_process");
+const { execFileSync, spawnSync } = require("node:child_process");
 const ts = require("typescript");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -12,6 +12,15 @@ const FIXTURE_PATH = path.join(__dirname, "l4-physics.baseline.json");
 const LAYOUT_PATH = path.join(__dirname, "l4-layout.seed-1278501273.snapshot.json");
 const BASELINE_COMMIT = "996ac4e";
 const BASELINE_TITLE = "test(level4): add deterministic generation harness";
+const B1_FIXTURE_COMMIT = "9ab869d";
+const B1_FIXTURE_TITLE = "test(physics): freeze pre-stepPhysics baseline";
+const FROZEN_FIXTURE_SHA256 = "5c53dcd27cfc71d25b73c8acbb2703a00ce05f45fd8b0d2c82bb51bede85c9b3";
+const BASELINE_SOURCE_BLOB_SHA256 = "b5abdacaf2cb7cdb8379708c4913254d97a2570f91196811c149e81c62d82750";
+const BASELINE_CAPTURE_TOOL_BLOB_SHA256 = "7f4c39ceefa23f224755ca923440101e11f77727f83dd509a6dc11f5bffef4e9";
+const FROZEN_TRAJECTORY_EXCLUDED_FIELDS = Object.freeze([
+    "productionSourceSha256",
+    "captureToolSha256",
+]);
 const GENERATION_SEED = 1278501273;
 const SCHEMA_VERSION = 1;
 
@@ -191,18 +200,138 @@ const BallController = require(SOURCE_PATH).default;
 const { ScoreManager } = require(path.join(ROOT, "src", "ScoreManager.ts"));
 const { SfxManager } = require(path.join(ROOT, "src", "SfxManager.ts"));
 
+function sha256Bytes(bytes) {
+    return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
 function sha256File(filePath) {
-    return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+    return sha256Bytes(fs.readFileSync(filePath));
 }
 
 function gitOutput(args) {
     return execFileSync("git", args, { cwd: ROOT, encoding: "utf8" }).trim();
 }
 
+function readGitBlob(commit, filePath) {
+    const objectSpec = `${commit}:${filePath}`;
+    const result = spawnSync("git", ["cat-file", "blob", objectSpec], {
+        cwd: ROOT,
+        encoding: null,
+    });
+    if (result.error) throw result.error;
+    assert.equal(
+        result.status,
+        0,
+        `unable to read historical Git blob ${objectSpec}: ${result.stderr?.toString("utf8").trim() ?? "unknown git error"}`,
+    );
+    assert.ok(Buffer.isBuffer(result.stdout), `${objectSpec}: git blob stdout must be a raw Buffer`);
+    return result.stdout;
+}
+
+function assertGitAncestor(commit, label) {
+    const result = spawnSync("git", ["merge-base", "--is-ancestor", commit, "HEAD"], {
+        cwd: ROOT,
+        encoding: null,
+    });
+    if (result.error) throw result.error;
+    assert.equal(
+        result.status,
+        0,
+        `${label} ${commit} is not an ancestor of HEAD: ${result.stderr?.toString("utf8").trim() ?? "git merge-base failed"}`,
+    );
+}
+
 function verifyRepositoryAnchor() {
     assert.equal(gitOutput(["branch", "--show-current"]), "main", "baseline capture requires branch main");
-    assert.equal(gitOutput(["rev-parse", "--short=7", "HEAD"]), BASELINE_COMMIT, "baseline capture requires HEAD 996ac4e");
-    assert.equal(gitOutput(["log", "-1", "--format=%s"]), BASELINE_TITLE, "baseline commit title changed");
+    assert.equal(gitOutput(["show", "-s", "--format=%s", BASELINE_COMMIT]), BASELINE_TITLE, "baseline commit title changed");
+    assert.equal(gitOutput(["show", "-s", "--format=%s", B1_FIXTURE_COMMIT]), B1_FIXTURE_TITLE, "B1 fixture commit title changed");
+    assertGitAncestor(BASELINE_COMMIT, "baseline commit");
+    assertGitAncestor(B1_FIXTURE_COMMIT, "B1 fixture commit");
+    return {
+        head: gitOutput(["rev-parse", "--short=7", "HEAD"]),
+        baselineTitle: BASELINE_TITLE,
+        b1FixtureTitle: B1_FIXTURE_TITLE,
+    };
+}
+
+function materializeCrlf(rawBlob) {
+    let insertedCarriageReturns = 0;
+    for (let index = 0; index < rawBlob.length; index++) {
+        if (rawBlob[index] === 0x0a && (index === 0 || rawBlob[index - 1] !== 0x0d)) insertedCarriageReturns++;
+    }
+
+    const materialized = Buffer.allocUnsafe(rawBlob.length + insertedCarriageReturns);
+    let outputIndex = 0;
+    for (let index = 0; index < rawBlob.length; index++) {
+        if (rawBlob[index] === 0x0a && (index === 0 || rawBlob[index - 1] !== 0x0d)) {
+            materialized[outputIndex++] = 0x0d;
+        }
+        materialized[outputIndex++] = rawBlob[index];
+    }
+    assert.equal(outputIndex, materialized.length, "CRLF materialization byte count changed");
+    return materialized;
+}
+
+function diagnoseLegacyWorktreeHash(fixtureHash, rawBlob, label) {
+    const rawBlobSha256 = sha256Bytes(rawBlob);
+    const crlfMaterializedSha256 = sha256Bytes(materializeCrlf(rawBlob));
+    const matchMode = fixtureHash === rawBlobSha256
+        ? "RAW_BLOB"
+        : fixtureHash === crlfMaterializedSha256
+            ? "CRLF_MATERIALIZED"
+            : null;
+    assert.ok(
+        matchMode,
+        `${label} fixture legacy hash ${fixtureHash} matches neither raw blob ${rawBlobSha256} nor CRLF materialization ${crlfMaterializedSha256}`,
+    );
+    return { fixtureHash, rawBlobSha256, crlfMaterializedSha256, matchMode };
+}
+
+function verifyFrozenFixtureProvenance(fixture) {
+    const fixtureSha256 = sha256File(FIXTURE_PATH);
+    assert.equal(fixtureSha256, FROZEN_FIXTURE_SHA256, "frozen fixture file SHA-256 changed");
+    assert.equal(fixture.baselineCommit, BASELINE_COMMIT, "fixture baselineCommit changed");
+    assert.equal(fixture.baselineCommitTitle, BASELINE_TITLE, "fixture baselineCommitTitle changed");
+    assert.equal(fixture.productionSourcePath, "src/BallController.ts", "fixture productionSourcePath changed");
+
+    const repository = verifyRepositoryAnchor();
+    const baselineProductionBlobId = gitOutput(["rev-parse", `${BASELINE_COMMIT}:src/BallController.ts`]);
+    const b1ProductionBlobId = gitOutput(["rev-parse", `${B1_FIXTURE_COMMIT}:src/BallController.ts`]);
+    assert.equal(b1ProductionBlobId, baselineProductionBlobId, "BallController Git blob object ID changed between baseline and B1");
+
+    const baselineProductionBlob = readGitBlob(BASELINE_COMMIT, "src/BallController.ts");
+    const b1ProductionBlob = readGitBlob(B1_FIXTURE_COMMIT, "src/BallController.ts");
+    assert.ok(baselineProductionBlob.equals(b1ProductionBlob), "BallController raw blob bytes changed between baseline and B1");
+    const b1CaptureToolBlob = readGitBlob(B1_FIXTURE_COMMIT, "tools/capture-l4-physics-baseline.cjs");
+
+    const productionCanonicalRuntimeSha256 = sha256Bytes(baselineProductionBlob);
+    const captureToolCanonicalRuntimeSha256 = sha256Bytes(b1CaptureToolBlob);
+    assert.equal(productionCanonicalRuntimeSha256, BASELINE_SOURCE_BLOB_SHA256, "canonical production blob SHA-256 changed");
+    assert.equal(captureToolCanonicalRuntimeSha256, BASELINE_CAPTURE_TOOL_BLOB_SHA256, "canonical capture-tool blob SHA-256 changed");
+
+    assert.ok(Object.prototype.hasOwnProperty.call(fixture, "productionSourceSha256"), "fixture lacks productionSourceSha256 legacy field");
+    assert.ok(Object.prototype.hasOwnProperty.call(fixture, "captureToolSha256"), "fixture lacks captureToolSha256 legacy field");
+    const productionLegacy = diagnoseLegacyWorktreeHash(
+        fixture.productionSourceSha256,
+        baselineProductionBlob,
+        "production",
+    );
+    const captureToolLegacy = diagnoseLegacyWorktreeHash(
+        fixture.captureToolSha256,
+        b1CaptureToolBlob,
+        "capture-tool",
+    );
+
+    return {
+        repository,
+        fixtureSha256,
+        baselineProductionBlobId,
+        b1ProductionBlobId,
+        productionCanonicalRuntimeSha256,
+        captureToolCanonicalRuntimeSha256,
+        productionLegacy,
+        captureToolLegacy,
+    };
 }
 
 function createSeededRng(seed) {
@@ -682,6 +811,7 @@ function createHarness(scenario) {
         initializationRngCalls,
         highlightReference: null,
         onUpdateCalls: 0,
+        stepPhysicsCalls: 0,
     };
     installScoreAndSfx(harness, scenario.score);
     scenario.configure(harness);
@@ -885,16 +1015,27 @@ function invokeProductionOnUpdate(harness, frameIndex, frameDefinition) {
     activeHarness = harness;
 
     const originalConsoleLog = console.log;
+    const originalStepPhysics = harness.controller.stepPhysics;
+    let frameStepPhysicsCalls = 0;
+    assert.equal(originalStepPhysics, BallController.prototype.stepPhysics, "stepPhysics was replaced before production onUpdate");
+    harness.controller.stepPhysics = function observedStepPhysics(...args) {
+        frameStepPhysicsCalls++;
+        harness.stepPhysicsCalls++;
+        return originalStepPhysics.apply(this, args);
+    };
     console.log = (...args) => record("consoleLog", { args: args.map((value) => String(value)) });
     try {
         assert.equal(harness.controller.onUpdate, BallController.prototype.onUpdate, "onUpdate was replaced by the harness");
         harness.onUpdateCalls++;
         BallController.prototype.onUpdate.call(harness.controller);
     } finally {
+        harness.controller.stepPhysics = originalStepPhysics;
         console.log = originalConsoleLog;
         activeHarness = null;
         harness.phase = "idle";
     }
+
+    assert.equal(frameStepPhysicsCalls, 1, `${harness.scenarioId} frame ${frameIndex}: production onUpdate must call stepPhysics exactly once`);
 
     assert.deepStrictEqual(
         frameContext.inputReads.map((entry) => entry.key),
@@ -988,6 +1129,7 @@ function buildBaseline() {
         const initialState = captureState(harness);
         const frames = scenario.frames.map((entry, index) => invokeProductionOnUpdate(harness, index, entry));
         assert.equal(harness.onUpdateCalls, frames.length, `${scenario.id}: not every frame called production onUpdate`);
+        assert.equal(harness.stepPhysicsCalls, frames.length, `${scenario.id}: not every frame called production stepPhysics`);
         const trace = { scenarioId: scenario.id, frames };
         assertScenarioCoverage(trace);
         traces.push(trace);
@@ -1099,6 +1241,40 @@ function strictCompare(expected, actual) {
     });
 }
 
+function projectFrozenTrajectoryForStrictComparison(value, label) {
+    const requiredExcludedFields = ["productionSourceSha256", "captureToolSha256"];
+    assert.equal(FROZEN_TRAJECTORY_EXCLUDED_FIELDS.length, 2, "frozen trajectory exclusion list must contain exactly two fields");
+    assert.deepStrictEqual(
+        [...FROZEN_TRAJECTORY_EXCLUDED_FIELDS],
+        requiredExcludedFields,
+        "frozen trajectory exclusion list changed",
+    );
+    assert.ok(value && typeof value === "object" && !Array.isArray(value), `${label} baseline must be a top-level object`);
+    for (const field of requiredExcludedFields) {
+        assert.ok(Object.prototype.hasOwnProperty.call(value, field), `${label} baseline lacks own top-level field ${field}`);
+    }
+
+    const projected = { ...value };
+    for (const field of requiredExcludedFields) delete projected[field];
+    return projected;
+}
+
+function strictCompareFrozenTrajectory(expected, actual) {
+    assert.deepStrictEqual(
+        Object.keys(actual),
+        Object.keys(expected),
+        "frozen and current baseline top-level fields differ before trajectory projection",
+    );
+    const projectedExpected = projectFrozenTrajectoryForStrictComparison(expected, "frozen fixture");
+    const projectedActual = projectFrozenTrajectoryForStrictComparison(actual, "current generated");
+    assert.deepStrictEqual(
+        Object.keys(projectedActual),
+        Object.keys(projectedExpected),
+        "frozen and current baseline top-level fields differ after trajectory projection",
+    );
+    strictCompare(projectedExpected, projectedActual);
+}
+
 function stats(baseline) {
     const frames = baseline.traces.flatMap((trace) => trace.frames);
     return {
@@ -1122,17 +1298,61 @@ function parseMode(argv) {
 
 function main() {
     const mode = parseMode(process.argv.slice(2));
-    verifyRepositoryAnchor();
+    let expected = null;
+    let provenance = null;
+    let repository = null;
+    if (mode.verify) {
+        assert.ok(fs.existsSync(FIXTURE_PATH), `${path.relative(ROOT, FIXTURE_PATH)} does not exist; run --write first`);
+        expected = JSON.parse(fs.readFileSync(FIXTURE_PATH, "utf8"));
+        provenance = verifyFrozenFixtureProvenance(expected);
+        repository = provenance.repository;
+    } else {
+        repository = verifyRepositoryAnchor();
+    }
 
     const generatedA = canonicalize(buildBaseline());
     const generatedB = canonicalize(buildBaseline());
     strictCompare(generatedA, generatedB);
     const summary = stats(generatedA);
+    const currentProductionSourceSha256 = sha256File(SOURCE_PATH);
+    const currentCaptureToolSha256 = sha256File(TOOL_PATH);
+    assert.equal(generatedA.productionSourceSha256, currentProductionSourceSha256, "generated production source SHA-256 is not current");
+    assert.equal(generatedA.captureToolSha256, currentCaptureToolSha256, "generated capture-tool SHA-256 is not current");
 
     console.log(`[l4-physics] mode: ${mode.write ? "write" : "verify"}`);
-    console.log(`[l4-physics] baseline: main ${BASELINE_COMMIT} ${BASELINE_TITLE}`);
+    console.log(`[l4-physics] fixture baseline: main ${BASELINE_COMMIT} ${BASELINE_TITLE}`);
+    console.log(`[l4-physics] current HEAD: ${repository.head}`);
+    console.log(`[l4-physics] current production source SHA-256: ${currentProductionSourceSha256}`);
+    console.log(`[l4-physics] current capture tool SHA-256: ${currentCaptureToolSha256}`);
+    if (provenance) {
+        console.log(`[l4-physics] frozen fixture SHA-256 fixed: ${FROZEN_FIXTURE_SHA256}`);
+        console.log(`[l4-physics] frozen fixture SHA-256 runtime: ${provenance.fixtureSha256}`);
+        console.log("[l4-physics] baseline commit ancestry: PASS");
+        console.log("[l4-physics] B1 fixture commit ancestry: PASS");
+        console.log(`[l4-physics] baseline commit title: PASS (${repository.baselineTitle})`);
+        console.log(`[l4-physics] B1 fixture commit title: PASS (${repository.b1FixtureTitle})`);
+        console.log(`[l4-physics] baseline production blob object ID: ${provenance.baselineProductionBlobId}`);
+        console.log(`[l4-physics] B1 production blob object ID: ${provenance.b1ProductionBlobId}`);
+        console.log("[l4-physics] baseline-to-B1 production blob identity: PASS");
+        console.log(`[l4-physics] canonical production blob fixed SHA-256: ${BASELINE_SOURCE_BLOB_SHA256}`);
+        console.log(`[l4-physics] canonical production blob runtime SHA-256: ${provenance.productionCanonicalRuntimeSha256}`);
+        console.log("[l4-physics] canonical production blob provenance: PASS");
+        console.log(`[l4-physics] canonical capture-tool blob fixed SHA-256: ${BASELINE_CAPTURE_TOOL_BLOB_SHA256}`);
+        console.log(`[l4-physics] canonical capture-tool blob runtime SHA-256: ${provenance.captureToolCanonicalRuntimeSha256}`);
+        console.log("[l4-physics] canonical capture-tool blob provenance: PASS");
+        console.log(`[l4-physics] legacy production fixture SHA-256: ${provenance.productionLegacy.fixtureHash}`);
+        console.log(`[l4-physics] legacy production RAW_BLOB SHA-256: ${provenance.productionLegacy.rawBlobSha256}`);
+        console.log(`[l4-physics] legacy production CRLF_MATERIALIZED SHA-256: ${provenance.productionLegacy.crlfMaterializedSha256}`);
+        console.log(`[l4-physics] legacy production worktree hash reproduction: PASS (${provenance.productionLegacy.matchMode})`);
+        console.log(`[l4-physics] legacy capture-tool fixture SHA-256: ${provenance.captureToolLegacy.fixtureHash}`);
+        console.log(`[l4-physics] legacy capture-tool RAW_BLOB SHA-256: ${provenance.captureToolLegacy.rawBlobSha256}`);
+        console.log(`[l4-physics] legacy capture-tool CRLF_MATERIALIZED SHA-256: ${provenance.captureToolLegacy.crlfMaterializedSha256}`);
+        console.log(`[l4-physics] legacy capture-tool worktree hash reproduction: PASS (${provenance.captureToolLegacy.matchMode})`);
+        console.log("[l4-physics] frozen fixture provenance verification: PASS");
+    }
     console.log("[l4-physics] production BallController.prototype.onUpdate: CALLED");
-    console.log("[l4-physics] in-memory deterministic replay: PASS");
+    console.log(`[l4-physics] production stepPhysics calls: ${summary.frames}`);
+    console.log("[l4-physics] in-memory current replay strict verification: PASS");
     console.log(`[l4-physics] scenarios: ${summary.scenarios}`);
     console.log(`[l4-physics] total frames: ${summary.frames}`);
     console.log(`[l4-physics] timer reads: ${summary.timerReads}`);
@@ -1149,10 +1369,11 @@ function main() {
         return;
     }
 
-    assert.ok(fs.existsSync(FIXTURE_PATH), `${path.relative(ROOT, FIXTURE_PATH)} does not exist; run --write first`);
-    const expected = JSON.parse(fs.readFileSync(FIXTURE_PATH, "utf8"));
-    strictCompare(expected, generatedA);
-    console.log("[l4-physics] frozen fixture strict verification: PASS");
+    strictCompareFrozenTrajectory(expected, generatedA);
+    console.log("[l4-physics] frozen fixture strict trajectory verification: PASS");
+    console.log("[l4-physics] 字段差异: 0");
+    console.log("[l4-physics] 事件顺序差异: 0");
+    console.log("[l4-physics] 第一处轨迹差异: 无");
 }
 
 main();

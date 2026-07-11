@@ -38,6 +38,30 @@ interface DisappearConfig {
     triggerAt: number;     // 进入 counting 状态时的时间戳（ms），仅在 counting 时有效；用于计算消失倒计时进度
 }
 
+export interface BallPhysicsInput {
+    restart(): boolean;
+    left(): boolean;
+    right(): boolean;
+    jump(): boolean;
+}
+
+export interface BallPhysicsTime {
+    currTimer(): number;
+}
+
+export interface BallPhysicsEnvironment {
+    isWon(): boolean;
+    restartGame(): void;
+    playJump(): void;
+    updateMovingPlatform(platform: any): void;
+    resolveVerticalCollision(platform: any, time: BallPhysicsTime): void;
+    syncDisappearHighlightBar(): void;
+    checkHazards(): void;
+    releaseGroundIfUnsupported(): void;
+    clampToCanvas(): void;
+    syncBallSprite(ball: any): void;
+}
+
 // 使用 regClass 装饰器注册脚本类，使其能在 Laya 编辑器中被识别
 @regClass()
 // 导出 BallController 类，继承 Laya.Script 以获得生命周期回调能力
@@ -158,11 +182,39 @@ export default class BallController extends Laya.Script {
         const ball = this.owner as any;
         if (!ball) return;
 
+        this.stepPhysics(
+            ball,
+            {
+                restart: () => this.isKeyDown(Laya.Keyboard.R),
+                left: () => this.isKeyDown(Laya.Keyboard.LEFT, Laya.Keyboard.A),
+                right: () => this.isKeyDown(Laya.Keyboard.RIGHT, Laya.Keyboard.D),
+                jump: () => this.isKeyDown(Laya.Keyboard.W) || this.isKeyDown(Laya.Keyboard.UP),
+            },
+            {
+                currTimer: () => Laya.timer.currTimer,
+            },
+            {
+                isWon: () => ScoreManager.instance.isWon(),
+                restartGame: () => this.restartGame(),
+                playJump: () => SfxManager.playJump(),
+                updateMovingPlatform: (platform: any) => this.updateMovingPlatform(platform),
+                resolveVerticalCollision: (platform: any, time: BallPhysicsTime) => this.resolveVerticalCollision(platform, time),
+                syncDisappearHighlightBar: () => this.syncDisappearHighlightBar(),
+                checkHazards: () => this.checkHazards(),
+                releaseGroundIfUnsupported: () => this.releaseGroundIfUnsupported(),
+                clampToCanvas: () => this.clampToCanvas(),
+                syncBallSprite: (target: any) => this.syncBallSprite(target),
+            },
+        );
+    }
+
+    public stepPhysics(ball: any, input: BallPhysicsInput, time: BallPhysicsTime, env: BallPhysicsEnvironment): void {
+
         // ── 步骤 0：胜利后按 R 重开本局（最先检测，命中则跳过本帧后续逻辑）──
-        const restart = this.isKeyDown(Laya.Keyboard.R);// 检测重开按键 R 是否按下
-        if (restart && !this.prevRestartKey && ScoreManager.instance.isWon()) {// 按下 R 且之前未按下，且游戏已胜利
+        const restart = input.restart();// 检测重开按键 R 是否按下
+        if (restart && !this.prevRestartKey && env.isWon()) {// 按下 R 且之前未按下，且游戏已胜利
             this.prevRestartKey = restart;// 记录本帧的重开按键状态，用于下帧判断是否按键刚按下
-            this.restartGame();// 调用 restartGame() 方法，重开本局并切换到下一关的随机平台布局
+            env.restartGame();// 调用 restartGame() 方法，重开本局并切换到下一关的随机平台布局
             return;// 跳过本帧后续逻辑，避免在胜利状态下继续处理物理和碰撞
         }
         this.prevRestartKey = restart;// 记录本帧的重开按键状态，用于下帧判断是否按键刚按下
@@ -179,13 +231,11 @@ export default class BallController extends Laya.Script {
         // 只用 Laya.InputManager 轮询：每帧都重新读取真实按键状态，
         // 天然不会出现窗口失焦后"卡键"（原生 keydown/keyup 漏掉 keyup）的问题。
         // 检测左移按键（LEFT或A）
-        const left = this.isKeyDown(Laya.Keyboard.LEFT, Laya.Keyboard.A);
+        const left = input.left();
         // 检测右移按键（RIGHT或D）
-        const right = this.isKeyDown(Laya.Keyboard.RIGHT, Laya.Keyboard.D);
+        const right = input.right();
         // 检测跳跃按键（W 或 up）
-        const jump =
-            this.isKeyDown(Laya.Keyboard.W)||
-            this.isKeyDown(Laya.Keyboard.UP);
+        const jump = input.jump();
 
         // 如果按下左键则向左加速
         if (left) this.vx -= this.moveAccel;
@@ -210,7 +260,7 @@ export default class BallController extends Laya.Script {
         // ── 步骤 3：跳跃逻辑 ──
         // prevJumpKey 用来保证按住 W 时只跳一次，不会每一帧连续起跳。
         // 检测跳跃（按下W、之前未按下、且球在地面上,且游戏未胜利）
-        if (jump && !this.prevJumpKey && this.onGround && !ScoreManager.instance.isWon()) {
+        if (jump && !this.prevJumpKey && this.onGround && !env.isWon()) {
             // 从 Ground 主动起跳后，Platform_* 才开始参与碰撞。
             // 此处 groundPlatform 反映的是上一帧落地结果（重置发生在跳跃判断之后）
             if (!this.platformsActive && this.groundPlatform?.name === "Ground") {// Ground 起跳后激活 Platform_* 碰撞
@@ -219,7 +269,7 @@ export default class BallController extends Laya.Script {
             }
             // 设置向上的初始速度
             this.vy = -this.jumpStrength;
-            SfxManager.playJump();
+            env.playJump();
             // 标记不在地面
             this.onGround = false;
             // 清除平台参考
@@ -240,7 +290,7 @@ export default class BallController extends Laya.Script {
         this.previousY = this.centerY;
         this.centerY += this.vy;
         // 推进消失平台计时并刷新预警颜色:counting 超过延迟则消失
-        const nowMs = Laya.timer.currTimer;
+        const nowMs = time.currTimer();
         for (const [p, cfg] of this.disappearConfigs) {
             if (cfg.state === 'counting') {
                 const elapsedMs = nowMs - cfg.triggerAt;
@@ -269,23 +319,23 @@ export default class BallController extends Laya.Script {
         }
         // 检测垂直方向的碰撞
         for (const platform of this.platforms) {
-            this.updateMovingPlatform(platform);// 新增：先更新移动平台位置
-            this.resolveVerticalCollision(platform);// 检测球是否与平台发生垂直碰撞，并处理落地逻辑
+            env.updateMovingPlatform(platform);// 新增：先更新移动平台位置
+            env.resolveVerticalCollision(platform, time);// 检测球是否与平台发生垂直碰撞，并处理落地逻辑
         }
-        this.syncDisappearHighlightBar();
+        env.syncDisappearHighlightBar();
         // 平台是单向平台：只处理从上往下落到平台顶面，不处理平台侧面和底面。
         // 应用水平速度移动
         this.centerX += this.vx;
         // 尖刺检测放在 X 位移之后，读取本帧最终球心 X（消除 ~5px 半帧滞后）；
         // 仍在 clampToCanvas 之前，保持“尖刺死亡优先于掉落死亡”的同帧判定顺序。
-        this.checkHazards();
-        this.releaseGroundIfUnsupported();// 检查球是否离开平台边缘，如果离开则取消落地状态，让球自然下落。
+        env.checkHazards();
+        env.releaseGroundIfUnsupported();// 检查球是否离开平台边缘，如果离开则取消落地状态，让球自然下落。
 
         // 最后处理顶墙、左右墙和掉出屏幕保护，再把结果写回节点一次。
         // 检测边界碰撞
-        this.clampToCanvas();// 检查球是否撞到墙体边界，并处理反弹和位置限制，同时检测是否掉出屏幕底部并触发复活逻辑
+        env.clampToCanvas();// 检查球是否撞到墙体边界，并处理反弹和位置限制，同时检测是否掉出屏幕底部并触发复活逻辑
         // 将球的位置同步回Laya节点
-        this.syncBallSprite(ball);// 将计算后的球心坐标写回 Laya 节点，更新球的实际显示位置
+        env.syncBallSprite(ball);// 将计算后的球心坐标写回 Laya 节点，更新球的实际显示位置
     }
 
     /**
@@ -302,7 +352,7 @@ export default class BallController extends Laya.Script {
      * 5. Ground 平台落地时检查 deathEnabled 标志决定是否复活
      * 6. Platform_* 落地时触发计分和消失平台计时
      */
-    private resolveVerticalCollision(platform: any): void {
+    private resolveVerticalCollision(platform: any, time: BallPhysicsTime): void {
         // 已消失的平台不参与碰撞(visible=false 仅隐藏显示,必须在此显式跳过)
         const dcSkip = this.disappearConfigs.get(platform);
         if (dcSkip && dcSkip.state === 'hidden') return;
@@ -368,7 +418,7 @@ export default class BallController extends Laya.Script {
                 const dc = this.disappearConfigs.get(platform);
                 if (dc && dc.state === 'idle') {
                     dc.state = 'counting';
-                    dc.triggerAt = Laya.timer.currTimer;
+                    dc.triggerAt = time.currTimer();
                 }
             }
         }
