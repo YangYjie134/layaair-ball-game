@@ -97,6 +97,7 @@ export default class BallController extends Laya.Script {
     private currentLevel: number = 1;
     private readonly maxLevel: number = 4;
     private levelText: any = null;
+    private rng: () => number = Math.random;
 
     private platforms: any[] = [];       // Platform_ 开头的节点和 Ground 都会放进这里。
     private spikes: any[] = [];          // Level 4 静态尖刺，运行时动态创建。
@@ -125,6 +126,10 @@ export default class BallController extends Laya.Script {
      * 启用条件：仅 Level 3/4 关卡通过 setupDisappearPlatforms() 填充；低于 Level 3 时为空。
      */
     private disappearConfigs: Map<any, DisappearConfig> = new Map();
+
+    public setRandomSource(rng: () => number): void {
+        this.rng = rng;
+    }
 
     // 初始化时记录出生点并收集平台与墙体节点，后续碰撞逻辑将以这些节点为基准
     onAwake(): void {
@@ -865,7 +870,7 @@ export default class BallController extends Laya.Script {
             return;
         }
 
-        const placement = candidates[Math.floor(Math.random() * candidates.length)];
+        const placement = candidates[Math.floor(this.rng() * candidates.length)];
         const target = placement.platform;
         const targetWidth = target.width || 0;
         const spikeWidth = placement.spikeWidth;
@@ -1129,7 +1134,7 @@ export default class BallController extends Laya.Script {
         const movingIndices = new Set<number>();
         const targetMovingCount = Math.min(movingCount, count);
         while (movingIndices.size < targetMovingCount) {
-            movingIndices.add(Math.floor(Math.random() * count));
+            movingIndices.add(Math.floor(this.rng() * count));
         }
         let movingIndex = 0;
 
@@ -1140,7 +1145,7 @@ export default class BallController extends Laya.Script {
 
             // ── Y：基础高度向上分层 + 抖动 ──
             const layerBaseY = baseY - i * layerStep;
-            const jitter = (Math.random() * 2 - 1) * yJitter;
+            const jitter = (this.rng() * 2 - 1) * yJitter;
             platform.y = Math.round(layerBaseY + jitter);
 
             // ── X：中心坐标的合法范围（保证平台整体在墙内）──
@@ -1157,7 +1162,7 @@ export default class BallController extends Laya.Script {
                 centerX = this.pickPlatform1CenterX(centerMin, centerMax, halfWidth);
             } else {
                 if (lo > hi) { lo = centerMin; hi = centerMax; } // 兜底，避免空区间
-                centerX = lo + Math.random() * (hi - lo);
+                centerX = lo + this.rng() * (hi - lo);
             }
 
             platform.x = Math.round(centerX - halfWidth);
@@ -1218,7 +1223,7 @@ export default class BallController extends Laya.Script {
         const candidates = sorted.slice(0, -1);
         if (candidates.length === 0) return; // 无平台,放弃注册
 
-        const target = candidates[Math.floor(Math.random() * candidates.length)];
+        const target = candidates[Math.floor(this.rng() * candidates.length)];
         this.disappearConfigs.set(target, { state: 'idle', triggerAt: 0 });
         this.repaintPlatformColor(target, "#00ff00");
     }
@@ -1245,8 +1250,8 @@ export default class BallController extends Laya.Script {
 
         // 正常情况：在左右候选区间里随机挑一段
         if (ranges.length > 0) {
-            const [lo, hi] = ranges[Math.floor(Math.random() * ranges.length)];
-            return lo + Math.random() * (hi - lo);
+            const [lo, hi] = ranges[Math.floor(this.rng() * ranges.length)];
+            return lo + this.rng() * (hi - lo);
         }
 
         // 兜底：直接放到出生点右侧最小错开处（仍夹在墙内），保证不在正下方
