@@ -21,6 +21,13 @@ Requirements, technical decisions, code integration, debugging, verification, an
   <img src="docs/showcase/level-complete.webp" alt="Level complete interface at Score 5" width="49%">
 </p>
 
+## Play Online
+
+- **Browser demo:** [Play LayaAir Ball Game](https://yangyjie134.github.io/layaair-ball-game/)
+- **Downloadable Web build:** [Latest GitHub Release](https://github.com/YangYjie134/layaair-ball-game/releases/latest)
+
+Press `Space` after the page loads to dismiss the controls overlay and start the music. 浏览器会在首次键盘交互后开始播放音频。
+
 ## Current Status
 
 - **Engine:** LayaAir 3
@@ -135,7 +142,7 @@ src/
 2. Run the main scene from the editor.
 3. Press `Space` to dismiss the controls overlay, then use the controls listed above.
 
-For a published Web build, use a local HTTP server rather than opening the build with `file://`.
+For the downloadable Web build, extract the Release archive and use a local HTTP server rather than opening it with `file://`. The hosted GitHub Pages build is linked in **Play Online** above.
 
 `package.json` currently does not define npm scripts, so this README intentionally does not document `npm run dev`, `npm start`, or similar commands.
 
@@ -149,7 +156,11 @@ For a published Web build, use a local HTTP server rather than opening the build
 ## Known Limitations
 
 - Background music starts only after the first keyboard input, due to browser autoplay policies.
-- The project currently runs from the LayaAir IDE and does not yet ship a standalone web build.
+- The hosted and downloadable builds are portfolio Web demos, not commercial or store releases.
+
+## Licensing
+
+No project-wide license is currently declared. Third-party engine files, LayaAir template assets, Box2D code present in generated output, and CC0 audio are documented separately in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). That notice does not grant permission to reuse the project's original code, documentation, screenshots, or game design.
 
 ## Optional Future Polish
 
