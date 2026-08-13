@@ -1,6 +1,10 @@
 # LayaAir Ball Game
 
-A completed four-level 2D platformer built with **LayaAir 3** and **TypeScript**.
+> Personal project / 个人项目 | Independently developed / 独立开发
+
+![BallGame core gameplay](docs/showcase/core-gameplay.webp)
+
+A completed four-level 2D platformer personal project built with **LayaAir 3** and **TypeScript**.
 
 This is a finished learning and portfolio project, not a commercial release. It focuses on custom platformer physics, readable gameplay rules, randomized platform layouts, and a compact four-level game loop.
 
@@ -10,6 +14,13 @@ The player controls a ball, jumps through platform layouts, scores by landing on
 
 The project currently uses code-driven gameplay logic and a code-drawn background rather than relying only on scene-editor behavior.
 
+Requirements, technical decisions, code integration, debugging, verification, and final acceptance were handled independently; AI tools were used as development assistants.
+
+<p align="center">
+  <img src="docs/showcase/level-4-hazards.webp" alt="Level 4 moving, disappearing, and spike hazards" width="49%">
+  <img src="docs/showcase/level-complete.webp" alt="Level complete interface at Score 5" width="49%">
+</p>
+
 ## Current Status
 
 - **Engine:** LayaAir 3
@@ -18,6 +29,7 @@ The project currently uses code-driven gameplay logic and a code-drawn backgroun
 - **Current level loop:** Level 1 through Level 4, then loops back
 - **Completed scope:** movement, jumping, collision, death / respawn, randomized layouts, special platforms, Level 4 hazards, and audio
 - **Project stage:** completed learning / portfolio project
+- **Development model:** personal project / independently developed
 
 ## Features
 
@@ -119,7 +131,11 @@ src/
 
 ## How to Run
 
-Open the project with **LayaAir IDE** and run the main scene from the editor.
+1. Open the repository folder with **LayaAir IDE 3**.
+2. Run the main scene from the editor.
+3. Press `Space` to dismiss the controls overlay, then use the controls listed above.
+
+For a published Web build, use a local HTTP server rather than opening the build with `file://`.
 
 `package.json` currently does not define npm scripts, so this README intentionally does not document `npm run dev`, `npm start`, or similar commands.
 
