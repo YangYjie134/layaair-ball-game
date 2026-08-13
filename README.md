@@ -2,7 +2,9 @@
 
 > Personal project / 个人项目 | Independently developed / 独立开发
 
-![BallGame core gameplay](docs/showcase/core-gameplay.webp)
+![BallGame gameplay flow: core movement, special platforms, and level clear](docs/showcase/gameplay-preview.gif)
+
+*Gameplay flow preview assembled from captured in-game states: core gameplay, special platforms, and level clear.*
 
 A completed four-level 2D platformer personal project built with **LayaAir 3** and **TypeScript**.
 
