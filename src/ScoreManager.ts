@@ -17,9 +17,12 @@ export class ScoreManager {
 
     // 当前分数
     private score: number = 0;
-    // 分数显示文本对象
+    // 分数 HUD 与显示对象（仅负责展示，不参与计分）
+    private scoreHud: any = null;
     private scoreText: any = null;
-    // 获胜提示文本对象
+    private scoreSegments: any[] = [];
+    // 获胜卡片与提示文本对象
+    private winCard: any = null;
     private winText: any = null;
     // 是否已经获胜
     private hasWon: boolean = false;
@@ -58,53 +61,206 @@ export class ScoreManager {
 
     // 创建分数显示文本
     private createScoreText(): void {
-        // 新建文本对象
+        const hudWidth = 392;
+        const hudHeight = 44;
+
+        this.scoreHud = new Laya.Sprite();
+        this.scoreHud.x = 40;
+        this.scoreHud.y = 32;
+        this.scoreHud.width = hudWidth;
+        this.scoreHud.height = hudHeight;
+        this.scoreHud.zOrder = 9999;
+        this.scoreHud.mouseEnabled = false;
+
+        // 深色半透明切角底板。
+        const background = new Laya.Sprite();
+        background.alpha = 0.9;
+        background.graphics.drawPoly(
+            0,
+            0,
+            [8, 0, hudWidth - 8, 0, hudWidth, 8, hudWidth, hudHeight - 8,
+                hudWidth - 8, hudHeight, 8, hudHeight, 0, hudHeight - 8, 0, 8],
+            "#06111F",
+            "#1A7188",
+            1
+        );
+        this.scoreHud.addChild(background);
+
+        // FUI 顶部强调线与切角端点。
+        const frame = new Laya.Sprite();
+        frame.graphics.drawLine(16, 0, 150, 0, "#35E9FF", 2);
+        frame.graphics.drawLine(8, 43, 58, 43, "#7C4DFF", 1);
+        frame.graphics.drawLine(382, 5, 387, 10, "#35E9FF", 1);
+        this.scoreHud.addChild(frame);
+
+        const scoreLabel = new Laya.Text();
+        scoreLabel.text = "SCORE";
+        scoreLabel.font = "Arial";
+        scoreLabel.fontSize = 15;
+        scoreLabel.color = "#78D7E8";
+        scoreLabel.bold = true;
+        scoreLabel.x = 16;
+        scoreLabel.y = 6;
+        scoreLabel.width = 66;
+        scoreLabel.height = 32;
+        scoreLabel.align = "left";
+        scoreLabel.valign = "middle";
+        this.scoreHud.addChild(scoreLabel);
+
+        this.scoreSegments = [];
+        const segmentStartX = 90;
+        const segmentWidth = 24;
+        const segmentGap = 5;
+        for (let i = 0; i < this.winScore; i++) {
+            const segment = new Laya.Sprite();
+            segment.x = segmentStartX + i * (segmentWidth + segmentGap);
+            segment.y = 15;
+            segment.width = segmentWidth;
+            segment.height = 14;
+            this.scoreHud.addChild(segment);
+            this.scoreSegments.push(segment);
+        }
+
         this.scoreText = new Laya.Text();
-
-        // 设置文本内容和样式
-        this.scoreText.text = "Score: 0";
-        this.scoreText.fontSize = 28;
-        this.scoreText.color = "#FFD700";
+        this.scoreText.text = "00 / 05";
+        this.scoreText.font = "Arial";
+        this.scoreText.fontSize = 19;
+        this.scoreText.color = "#E8FCFF";
         this.scoreText.bold = true;
+        this.scoreText.x = 252;
+        this.scoreText.y = 5;
+        this.scoreText.width = 122;
+        this.scoreText.height = 34;
+        this.scoreText.align = "right";
+        this.scoreText.valign = "middle";
+        this.scoreHud.addChild(this.scoreText);
 
-        // 设置文本位置和大小
-        this.scoreText.x = 40;
-        this.scoreText.y = 30;
-        this.scoreText.width = 300;
-        this.scoreText.height = 50;
-        // 设置z层级为最前面
-        this.scoreText.zOrder = 9999;
-
-        // 添加到舞台
-        Laya.stage.addChild(this.scoreText);
+        Laya.stage.addChild(this.scoreHud);
     }
 
     // 创建获胜提示文本
     private createWinText(): void {
-        // 新建文本对象
-        this.winText = new Laya.Text();
+        const cardWidth = 540;
+        const cardHeight = 220;
 
-        // 设置文本内容和样式
-        this.winText.text = "You Win!";
-        this.winText.fontSize = 48;
-        this.winText.color = "#FFD700";
+        this.winCard = new Laya.Sprite();
+        this.winCard.width = cardWidth;
+        this.winCard.height = cardHeight;
+        this.winCard.zOrder = 10000;
+        this.winCard.mouseEnabled = false;
+
+        const background = new Laya.Sprite();
+        background.alpha = 0.94;
+        background.graphics.drawPoly(
+            0,
+            0,
+            [20, 0, cardWidth - 44, 0, cardWidth, 44, cardWidth, cardHeight - 20,
+                cardWidth - 20, cardHeight, 44, cardHeight, 0, cardHeight - 44, 0, 20],
+            "#050D1A",
+            "#17677B",
+            1
+        );
+        this.winCard.addChild(background);
+
+        // 轻量 FUI 框线、角标与瞄准器式装饰。
+        const frame = new Laya.Sprite();
+        frame.graphics.drawLine(42, 0, 312, 0, "#39F4FF", 2);
+        frame.graphics.drawLine(312, 0, 346, 0, "#8B5CFF", 2);
+        frame.graphics.drawLine(44, cardHeight, 214, cardHeight, "#39F4FF", 1);
+        frame.graphics.drawLine(16, 16, 58, 16, "#39F4FF", 2);
+        frame.graphics.drawLine(16, 16, 16, 58, "#39F4FF", 2);
+        frame.graphics.drawLine(cardWidth - 16, 58, cardWidth - 16, 88, "#39F4FF", 2);
+        frame.graphics.drawLine(cardWidth - 46, 16, cardWidth - 16, 46, "#39F4FF", 2);
+        frame.graphics.drawLine(16, cardHeight - 58, 16, cardHeight - 22, "#8B5CFF", 2);
+        frame.graphics.drawLine(16, cardHeight - 16, 58, cardHeight - 16, "#8B5CFF", 2);
+        frame.graphics.drawLine(cardWidth - 58, cardHeight - 16, cardWidth - 16, cardHeight - 16, "#39F4FF", 2);
+        frame.graphics.drawLine(cardWidth - 16, cardHeight - 58, cardWidth - 16, cardHeight - 16, "#39F4FF", 2);
+        frame.graphics.drawLine(68, 55, cardWidth - 68, 55, "#164C5B", 1);
+        frame.graphics.drawLine(68, 157, cardWidth - 68, 157, "#164C5B", 1);
+        this.winCard.addChild(frame);
+
+        const statusText = new Laya.Text();
+        statusText.text = "MISSION STATUS // COMPLETE";
+        statusText.font = "Arial";
+        statusText.fontSize = 14;
+        statusText.color = "#66DFF1";
+        statusText.bold = true;
+        statusText.x = 68;
+        statusText.y = 20;
+        statusText.width = cardWidth - 136;
+        statusText.height = 28;
+        statusText.align = "center";
+        statusText.valign = "middle";
+        this.winCard.addChild(statusText);
+
+        this.winText = new Laya.Text();
+        this.winText.text = "YOU WIN";
+        this.winText.font = "Arial";
+        this.winText.fontSize = 52;
+        this.winText.color = "#F0FDFF";
         this.winText.bold = true;
-        // 居中对齐
+        this.winText.stroke = 2;
+        this.winText.strokeColor = "#08788F";
         this.winText.align = "center";
         this.winText.valign = "middle";
+        this.winText.x = 56;
+        this.winText.y = 62;
+        this.winText.width = cardWidth - 112;
+        this.winText.height = 82;
+        this.winCard.addChild(this.winText);
 
-        // 设置文本覆盖整个屏幕
-        this.winText.x = 0;
-        this.winText.y = 0;
-        this.winText.width = Laya.stage.width;
-        this.winText.height = Laya.stage.height;
-        // 设置z层级最高
-        this.winText.zOrder = 10000;
-        // 默认隐藏
-        this.winText.visible = false;
+        const scoreStatus = new Laya.Text();
+        scoreStatus.text = "SCORE  05 / 05";
+        scoreStatus.font = "Arial";
+        scoreStatus.fontSize = 16;
+        scoreStatus.color = "#9CEAF5";
+        scoreStatus.bold = true;
+        scoreStatus.x = 68;
+        scoreStatus.y = 169;
+        scoreStatus.width = cardWidth - 136;
+        scoreStatus.height = 28;
+        scoreStatus.align = "center";
+        scoreStatus.valign = "middle";
+        this.winCard.addChild(scoreStatus);
 
-        // 添加到舞台
-        Laya.stage.addChild(this.winText);
+        this.positionWinCard();
+        this.winCard.visible = false;
+        Laya.stage.addChild(this.winCard);
+    }
+
+    // 根据当前舞台尺寸保持胜利卡片居中。
+    private positionWinCard(): void {
+        if (!this.winCard) {
+            return;
+        }
+
+        this.winCard.x = Math.round((Laya.stage.width - this.winCard.width) / 2);
+        this.winCard.y = Math.round((Laya.stage.height - this.winCard.height) / 2);
+    }
+
+    // 刷新五段进度格的明暗状态。
+    private updateScoreSegments(): void {
+        const litCount = Math.min(this.score, this.winScore);
+
+        for (let i = 0; i < this.scoreSegments.length; i++) {
+            const segment = this.scoreSegments[i];
+            const isLit = i < litCount;
+
+            segment.graphics.clear();
+            segment.alpha = isLit ? 1 : 0.72;
+            segment.graphics.drawPoly(
+                0,
+                0,
+                [0, 0, 20, 0, 24, 4, 24, 14, 0, 14],
+                isLit ? "#2DEBFF" : "#0D2938",
+                isLit ? "#B8FBFF" : "#2B6272",
+                1
+            );
+
+            if (isLit) {
+                segment.graphics.drawLine(3, 2, 19, 2, "#E4FFFF", 1);
+            }
+        }
     }
 
     // 当球接触到平台时添加分数
@@ -162,8 +318,11 @@ export class ScoreManager {
             return;
         }
 
-        // 更新文本内容为当前分数
-        this.scoreText.text = "Score: " + this.score;
+        // 使用两位数字展示当前分数，并同步五段进度格。
+        const currentScore = this.score < 10 ? "0" + this.score : String(this.score);
+        const targetScore = this.winScore < 10 ? "0" + this.winScore : String(this.winScore);
+        this.scoreText.text = currentScore + " / " + targetScore;
+        this.updateScoreSegments();
     }
 
     // 检查是否满足获胜条件（分数达到5分）
@@ -184,27 +343,25 @@ export class ScoreManager {
 
     // 显示获胜提示文本
     private showWinText(): void {
-        // 检查文本对象是否存在
-        if (!this.winText) {
+        // 检查胜利卡片是否存在
+        if (!this.winCard || !this.winText) {
             return;
         }
 
-        // 确保文本覆盖整个屏幕
-        this.winText.width = Laya.stage.width;
-        this.winText.height = Laya.stage.height;
+        this.positionWinCard();
         // 设置为可见
-        this.winText.visible = true;
+        this.winCard.visible = true;
     }
 
     // 隐藏获胜提示文本
     private hideWinText(): void {
-        // 检查文本对象是否存在
-        if (!this.winText) {
+        // 检查胜利卡片是否存在
+        if (!this.winCard) {
             return;
         }
 
         // 设置为隐藏
-        this.winText.visible = false;
+        this.winCard.visible = false;
     }
 
     // 重置分数管理器状态
