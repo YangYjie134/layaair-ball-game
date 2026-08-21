@@ -7,6 +7,7 @@ import { ScoreManager } from "./ScoreManager";
 import { IntroUI } from "./IntroUI";
 import { BgmManager } from "./BgmManager";
 import BallController from "./BallController";
+import { LevelTransition } from "./LevelTransition";
 
 @regClass()
 export class Main extends Laya.Script {
@@ -22,6 +23,9 @@ export class Main extends Laya.Script {
         this.ballController = this.findBallController();
         if (this.ballController) {
             this.ballController.enabled = false;
+            this.ballController.setLevelTransitionHandler((level: number, resume: () => void) => {
+                LevelTransition.show(level, resume);
+            });
         } else {
             console.error("BallController lookup failed; gameplay remains disabled.");
         }
@@ -60,8 +64,11 @@ export class Main extends Laya.Script {
         }
 
         this.gameStarted = true;
-        this.ballController.enabled = true;
-        BgmManager.playBgm();
+        LevelTransition.show(1, () => {
+            if (!this.ballController) return;
+            this.ballController.enabled = true;
+            BgmManager.playBgm();
+        });
     }
 
     private onMuteKeyDown(event: any): void {

@@ -412,6 +412,7 @@ export default class BallController extends Laya.Script {
             // 如果是Platform_开头的平台（此时 platformsActive 必为 true，未激活已在函数开头被拦截）
             if (typeof platformName === "string" && platformName.indexOf("Platform_") === 0) {
                 this.deathEnabled = true;
+                this.syncGroundVisual();
                 // 按 Set 去重逻辑正常加分
                 ScoreManager.instance.addPlatformScore(platform);
                 // 消失平台:首次踩上时开始计时(幂等,仅 idle -> counting)
@@ -421,6 +422,43 @@ export default class BallController extends Laya.Script {
                     dc.triggerAt = time.currTimer();
                 }
             }
+        }
+    }
+
+    private levelTransitionHandler: ((level: number, resume: () => void) => void) | null = null;
+    private levelTransitionPending: boolean = false;
+    private visualLoopStarted: boolean = false;
+    private visualPhase: number = 0;
+    private groundVisual: any = null;
+    private groundEnergy: any = null;
+
+    public setLevelTransitionHandler(handler: ((level: number, resume: () => void) => void) | null): void {
+        this.levelTransitionHandler = handler;
+    }
+
+    private beginLevelTransition(): void {
+        const handler = this.levelTransitionHandler;
+        if (!handler) {
+            this.enabled = true;
+            return;
+        }
+        if (this.levelTransitionPending) return;
+
+        this.levelTransitionPending = true;
+        this.enabled = false;
+        let resumed = false;
+        const resume = (): void => {
+            if (resumed) return;
+            resumed = true;
+            this.levelTransitionPending = false;
+            this.enabled = true;
+        };
+
+        try {
+            handler(this.currentLevel, resume);
+        } catch (error) {
+            console.error("Level transition failed; gameplay resumed.", error);
+            resume();
         }
     }
 
@@ -561,15 +599,16 @@ export default class BallController extends Laya.Script {
     private repaintPlatformColor(platform: any, color: string): void {
         const graphics = platform?.graphics;
         const cmds = graphics?.cmds;
-        if (!graphics || !Array.isArray(cmds) || !Laya.DrawRectCmd) return;
-
-        const drawRectCmd = cmds.find((cmd: any) => cmd instanceof Laya.DrawRectCmd);
-        if (!drawRectCmd) return;
-
-        drawRectCmd.fillColor = color;
-        if (typeof graphics.repaint === "function") {
-            graphics.repaint();
+        if (graphics && Array.isArray(cmds) && Laya.DrawRectCmd) {
+            const drawRectCmd = cmds.find((cmd: any) => cmd instanceof Laya.DrawRectCmd);
+            if (drawRectCmd) {
+                drawRectCmd.fillColor = color;
+                if (typeof graphics.repaint === "function") {
+                    graphics.repaint();
+                }
+            }
         }
+        this.paintPlatformVisual(platform, color);
     }
 
     // 检查球是否掉出屏幕
@@ -659,6 +698,7 @@ export default class BallController extends Laya.Script {
         // 重置游戏状态
         this.platformsActive = false;
         this.deathEnabled = false;
+        this.syncGroundVisual();
 
         // 重置分数管理器
         ScoreManager.instance.reset();
@@ -686,6 +726,7 @@ export default class BallController extends Laya.Script {
         this.randomizePlatforms();
         this.randomizeHazards();
         this.updateLevelText();
+        this.beginLevelTransition();
     }
 
     public advanceAfterWin(): void {
@@ -831,6 +872,8 @@ export default class BallController extends Laya.Script {
             return typeof child?.name === "string" && (child.name.indexOf("Platform_") === 0 || child.name === "Ground");
         });
 
+        this.initializeVisualLayer();
+
         // 如果没有找到任何平台，输出警告
         if (this.platforms.length === 0) {
             console.warn("⚠️ 场景中未找到任何以 Platform_ 开头的节点！");
@@ -858,6 +901,8 @@ export default class BallController extends Laya.Script {
             : children.find((child: any) => child?.name === "Spike_1");
         if (existingSpike) {
             existingSpike.visible = false;
+            existingSpike.mouseEnabled = false;
+            this.paintSpikeVisual(existingSpike);
             this.spikes.push(existingSpike);
             return;
         }
@@ -868,8 +913,8 @@ export default class BallController extends Laya.Script {
         spike.width = 80;
         spike.height = 8;
         spike.zOrder = ((platform as any).zOrder || 0) + 1;
-        spike.graphics.clear();
-        spike.graphics.drawRect(0, 0, spike.width, spike.height, "#ff0000");
+        spike.mouseEnabled = false;
+        this.paintSpikeVisual(spike);
 
         platformParent.addChild(spike);
         this.spikes.push(spike);
@@ -946,8 +991,7 @@ export default class BallController extends Laya.Script {
         spike.height = spikeHeight;
         spike.zOrder = (target.zOrder || 0) + 1;
         spike.visible = true;
-        spike.graphics.clear();
-        spike.graphics.drawRect(0, 0, spike.width, spike.height, "#ff0000");
+        this.paintSpikeVisual(spike);
     }
 
     private getSortedGamePlatforms(): any[] {
@@ -1253,6 +1297,7 @@ export default class BallController extends Laya.Script {
         }
         // 再按当前关卡注册消失平台(此时 movingConfigs 已填充完毕)
         this.setupDisappearPlatforms(sorted, movingIndices);
+        this.refreshPlatformVisuals();
     }
 
     /**
@@ -1323,5 +1368,263 @@ export default class BallController extends Laya.Script {
         // 判断传入的多个按键中是否有任何一个被按下
         // 如果任意一个按键被按下则返回true
         return keys.some((key) => Laya.InputManager.hasKeyDown(key));
+    }
+
+    private initializeVisualLayer(): void {
+        this.refreshPlatformVisuals();
+        this.syncGroundVisual();
+        if (!this.visualLoopStarted && typeof Laya.timer?.frameLoop === "function") {
+            this.visualLoopStarted = true;
+            Laya.timer.frameLoop(1, this, this.updateVisualEffects);
+        }
+    }
+
+    private refreshPlatformVisuals(): void {
+        for (const platform of this.platforms) {
+            if (typeof platform?.name !== "string" || platform.name.indexOf("Platform_") !== 0) continue;
+            const disappear = this.disappearConfigs.get(platform);
+            this.paintPlatformVisual(platform, disappear ? "#00ff00" : "#ffffff");
+        }
+    }
+
+    private paintPlatformVisual(platform: any, bodyColor: string): void {
+        if (!platform || typeof platform.addChild !== "function") return;
+
+        let holoSide = typeof platform.getChildByName === "function"
+            ? platform.getChildByName("WPA_HoloSide")
+            : null;
+        if (!holoSide) {
+            const children: any[] = platform?._children ?? platform?._childs ?? [];
+            holoSide = children.find((child: any) => child?.name === "WPA_HoloSide") ?? null;
+        }
+        if (!holoSide) {
+            holoSide = new Laya.Sprite();
+            holoSide.name = "WPA_HoloSide";
+            holoSide.mouseEnabled = false;
+            platform.addChild(holoSide);
+        }
+
+        const width = Math.max(1, platform.width || 1);
+        const depth = Math.max(6, Math.min(12, Math.round((platform.height || 10) * 0.7)));
+        const isMoving = this.movingConfigs.has(platform);
+        const disappear = this.disappearConfigs.get(platform);
+        const warning = bodyColor !== "#ffffff";
+        const graphics = holoSide.graphics;
+        if (!graphics) return;
+
+        holoSide.x = 0;
+        holoSide.y = 0;
+        holoSide.width = width;
+        holoSide.height = depth + 4;
+        holoSide.zOrder = 1;
+        holoSide.alpha = 0.78;
+        graphics.clear();
+
+        const sideFill = warning ? bodyColor : "#082A46";
+        if (typeof graphics.drawPoly === "function") {
+            graphics.drawPoly(0, 3, [0, 0, width, 0, width - 8, depth, 8, depth], sideFill, "#35E9FF", 1);
+        }
+        if (typeof graphics.drawLine === "function") {
+            graphics.drawLine(0, 0, width, 0, warning ? bodyColor : "#8FFBFF", 2);
+            graphics.drawLine(8, depth, width - 8, depth, "#715CFF", 1);
+            graphics.drawLine(width * 0.2, 5, width * 0.8, 5, "#16758D", 1);
+
+            if (isMoving) {
+                const center = width * 0.5;
+                graphics.drawLine(center - 24, 7, center - 14, 3, "#A7FFFF", 2);
+                graphics.drawLine(center - 24, 7, center - 14, 11, "#A7FFFF", 2);
+                graphics.drawLine(center + 24, 7, center + 14, 3, "#A7FFFF", 2);
+                graphics.drawLine(center + 24, 7, center + 14, 11, "#A7FFFF", 2);
+            }
+            if (disappear) {
+                for (let x = 12; x < width - 8; x += 22) {
+                    graphics.drawLine(x, 3, Math.min(width - 4, x + 8), depth, warning ? bodyColor : "#F9FF70", 1);
+                }
+            }
+        }
+    }
+
+    private syncGroundVisual(): void {
+        const ground = this.platforms.find((platform: any) => platform?.name === "Ground") ?? null;
+        if (!ground || typeof ground.addChild !== "function") return;
+
+        if (!this.groundVisual || this.groundVisual.parent !== ground) {
+            this.groundVisual = typeof ground.getChildByName === "function"
+                ? ground.getChildByName("WPA_GroundVisual")
+                : null;
+            if (!this.groundVisual) {
+                this.groundVisual = new Laya.Sprite();
+                this.groundVisual.name = "WPA_GroundVisual";
+                this.groundVisual.mouseEnabled = false;
+                ground.addChild(this.groundVisual);
+            }
+        }
+
+        if (!this.groundEnergy || this.groundEnergy.parent !== this.groundVisual) {
+            this.groundEnergy = typeof this.groundVisual.getChildByName === "function"
+                ? this.groundVisual.getChildByName("WPA_GroundEnergy")
+                : null;
+            if (!this.groundEnergy) {
+                this.groundEnergy = new Laya.Sprite();
+                this.groundEnergy.name = "WPA_GroundEnergy";
+                this.groundEnergy.mouseEnabled = false;
+                this.groundVisual.addChild(this.groundEnergy);
+            }
+        }
+
+        const width = Math.max(1, ground.width || Laya.stage.width || 1);
+        const height = Math.max(8, ground.height || 20);
+        const graphics = this.groundVisual.graphics;
+        const energyGraphics = this.groundEnergy.graphics;
+        if (!graphics || !energyGraphics) return;
+
+        this.groundVisual.x = 0;
+        this.groundVisual.y = 0;
+        this.groundVisual.width = width;
+        this.groundVisual.height = height;
+        this.groundVisual.zOrder = 2;
+        this.groundEnergy.width = width;
+        this.groundEnergy.height = height;
+        this.groundEnergy.visible = this.deathEnabled;
+
+        graphics.clear();
+        energyGraphics.clear();
+        if (this.deathEnabled) {
+            if (typeof graphics.drawRect === "function") {
+                graphics.drawRect(0, 0, width, height, "#3A092C", "#FF2E8A", 2);
+            }
+            if (typeof graphics.drawLine === "function") {
+                const gridStep = Math.max(24, Math.round(width / 14));
+                for (let x = 0; x <= width; x += gridStep) {
+                    graphics.drawLine(x, 0, x, height, "#8D174F", 1);
+                }
+                for (let y = 5; y < height; y += 7) {
+                    graphics.drawLine(0, y, width, y, "#641044", 1);
+                }
+            }
+            if (typeof graphics.drawPoly === "function") {
+                const toothWidth = Math.max(12, Math.round(width / 32));
+                for (let x = 0; x < width; x += toothWidth) {
+                    graphics.drawPoly(x, 0, [0, height, toothWidth * 0.5, 1, toothWidth, height], "#D41468", "#FF73BE", 1);
+                }
+            }
+            if (typeof energyGraphics.drawLine === "function") {
+                for (let i = 0; i < 12; i++) {
+                    const x = (i * 83 + 19) % width;
+                    const y = 2 + ((i * 11) % Math.max(3, height - 4));
+                    energyGraphics.drawLine(x, y, Math.min(width, x + 9), Math.max(0, y - 4), i % 2 ? "#FF4DA6" : "#B95CFF", 2);
+                }
+            }
+        } else {
+            if (typeof graphics.drawRect === "function") {
+                graphics.drawRect(0, 0, width, height, "#102A40", "#35E9FF", 1);
+            }
+            if (typeof graphics.drawLine === "function") {
+                graphics.drawLine(0, 1, width, 1, "#8FFBFF", 2);
+                for (let x = 16; x < width; x += 48) {
+                    graphics.drawLine(x, 5, Math.min(width, x + 22), 5, "#245D73", 1);
+                }
+            }
+        }
+    }
+
+    private paintSpikeVisual(spike: any): void {
+        const graphics = spike?.graphics;
+        if (!graphics) return;
+
+        const width = Math.max(1, spike.width || 1);
+        const height = Math.max(1, spike.height || 1);
+        graphics.clear();
+        if (typeof graphics.drawRect === "function") {
+            graphics.drawRect(0, 0, width, height, "#3E092E", "#FF2E8A", 2);
+        }
+        if (typeof graphics.drawPoly === "function") {
+            const toothCount = Math.max(3, Math.floor(width / 14));
+            const toothWidth = width / toothCount;
+            for (let i = 0; i < toothCount; i++) {
+                const x = i * toothWidth;
+                graphics.drawPoly(x, 0, [0, height, toothWidth * 0.5, 0, toothWidth, height], i % 2 ? "#7C2CFF" : "#FF267E", "#FF9BD1", 1);
+            }
+        }
+        if (typeof graphics.drawLine === "function") {
+            graphics.drawLine(0, height - 1, width, height - 1, "#FF4DA6", 2);
+            graphics.drawLine(0, 1, width, 1, "#FFF0FA", 1);
+        }
+
+        this.ensureSpikeEnergy(spike);
+    }
+
+    private ensureSpikeEnergy(spike: any): void {
+        if (!spike || typeof spike.addChild !== "function") return;
+
+        let energy = typeof spike.getChildByName === "function"
+            ? spike.getChildByName("WPA_HazardEnergy")
+            : null;
+        if (!energy) {
+            const children: any[] = spike?._children ?? spike?._childs ?? [];
+            energy = children.find((child: any) => child?.name === "WPA_HazardEnergy") ?? null;
+        }
+        if (!energy) {
+            energy = new Laya.Sprite();
+            energy.name = "WPA_HazardEnergy";
+            energy.mouseEnabled = false;
+            spike.addChild(energy);
+        }
+
+        const width = Math.max(1, spike.width || 1);
+        const height = Math.max(1, spike.height || 1);
+        energy.width = width;
+        energy.height = height;
+        energy.graphics.clear();
+        if (typeof energy.graphics.drawLine === "function") {
+            for (let i = 0; i < 6; i++) {
+                const x = (i + 0.5) * width / 6;
+                energy.graphics.drawLine(x - 4, height * 0.75, x + 4, height * 0.25, i % 2 ? "#44F6FF" : "#FFB4E1", 1);
+            }
+        }
+    }
+
+    private updateVisualEffects(): void {
+        this.visualPhase += 0.055;
+        const pulse = (Math.sin(this.visualPhase) + 1) * 0.5;
+
+        for (const platform of this.platforms) {
+            if (typeof platform?.name !== "string" || platform.name.indexOf("Platform_") !== 0) continue;
+            const holoSide = typeof platform.getChildByName === "function"
+                ? platform.getChildByName("WPA_HoloSide")
+                : null;
+            if (!holoSide) continue;
+            const disappear = this.disappearConfigs.get(platform);
+            holoSide.alpha = this.movingConfigs.has(platform) || disappear?.state === "counting"
+                ? 0.58 + pulse * 0.34
+                : 0.78;
+        }
+
+        if (this.groundVisual) {
+            this.groundVisual.alpha = this.deathEnabled ? 0.78 + pulse * 0.2 : 0.82;
+        }
+        if (this.groundEnergy) {
+            this.groundEnergy.alpha = 0.35 + pulse * 0.65;
+            this.groundEnergy.y = Math.round(Math.sin(this.visualPhase * 1.7) * 2);
+        }
+        for (const spike of this.spikes) {
+            const energy = typeof spike?.getChildByName === "function"
+                ? spike.getChildByName("WPA_HazardEnergy")
+                : null;
+            if (energy) {
+                energy.alpha = 0.35 + pulse * 0.65;
+            }
+        }
+    }
+
+    onDestroy(): void {
+        if (this.visualLoopStarted && typeof Laya.timer?.clear === "function") {
+            Laya.timer.clear(this, this.updateVisualEffects);
+        }
+        this.visualLoopStarted = false;
+        this.levelTransitionHandler = null;
+        this.levelTransitionPending = false;
+        this.groundVisual = null;
+        this.groundEnergy = null;
     }
 }
