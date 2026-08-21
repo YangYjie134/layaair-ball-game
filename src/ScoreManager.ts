@@ -24,6 +24,7 @@ export class ScoreManager {
     // 获胜卡片与提示文本对象
     private winCard: any = null;
     private winText: any = null;
+    private nextLevelHandler: (() => void) | null = null;
     // 是否已经获胜
     private hasWon: boolean = false;
     // 获胜所需分数
@@ -57,6 +58,10 @@ export class ScoreManager {
 
         // 初始化完成后输出日志，方便确认分数界面已成功创建
         console.log("ScoreManager: Score UI created");
+    }
+
+    public setNextLevelHandler(handler: () => void): void {
+        this.nextLevelHandler = handler;
     }
 
     // 创建分数显示文本
@@ -141,7 +146,7 @@ export class ScoreManager {
     // 创建获胜提示文本
     private createWinText(): void {
         const cardWidth = 540;
-        const cardHeight = 220;
+        const cardHeight = 300;
 
         this.winCard = new Laya.Sprite();
         this.winCard.width = cardWidth;
@@ -223,9 +228,64 @@ export class ScoreManager {
         scoreStatus.valign = "middle";
         this.winCard.addChild(scoreStatus);
 
+        const buttonWidth = 260;
+        const buttonHeight = 48;
+        const nextLevelButton = new Laya.Sprite();
+        nextLevelButton.x = Math.round((cardWidth - buttonWidth) / 2);
+        nextLevelButton.y = 200;
+        nextLevelButton.width = buttonWidth;
+        nextLevelButton.height = buttonHeight;
+        nextLevelButton.mouseEnabled = true;
+        nextLevelButton.graphics.drawPoly(
+            0,
+            0,
+            [8, 0, buttonWidth - 8, 0, buttonWidth, 8, buttonWidth, buttonHeight - 8,
+                buttonWidth - 8, buttonHeight, 8, buttonHeight, 0, buttonHeight - 8, 0, 8],
+            "#0A2432",
+            "#39F4FF",
+            2
+        );
+        nextLevelButton.graphics.drawLine(18, 5, 88, 5, "#8B5CFF", 2);
+        nextLevelButton.graphics.drawLine(buttonWidth - 70, buttonHeight - 5, buttonWidth - 18, buttonHeight - 5, "#39F4FF", 1);
+
+        const nextLevelLabel = new Laya.Text();
+        nextLevelLabel.text = "NEXT LEVEL";
+        nextLevelLabel.font = "Arial";
+        nextLevelLabel.fontSize = 19;
+        nextLevelLabel.color = "#DDFCFF";
+        nextLevelLabel.bold = true;
+        nextLevelLabel.width = buttonWidth;
+        nextLevelLabel.height = buttonHeight;
+        nextLevelLabel.align = "center";
+        nextLevelLabel.valign = "middle";
+        nextLevelLabel.mouseEnabled = false;
+        nextLevelButton.addChild(nextLevelLabel);
+        nextLevelButton.on(Laya.Event.CLICK, this, this.onNextLevelClick);
+        this.winCard.addChild(nextLevelButton);
+
+        const restartHint = new Laya.Text();
+        restartHint.text = "PRESS R";
+        restartHint.font = "Arial";
+        restartHint.fontSize = 13;
+        restartHint.color = "#6FA8B5";
+        restartHint.x = 68;
+        restartHint.y = 255;
+        restartHint.width = cardWidth - 136;
+        restartHint.height = 24;
+        restartHint.align = "center";
+        restartHint.valign = "middle";
+        restartHint.mouseEnabled = false;
+        this.winCard.addChild(restartHint);
+
         this.positionWinCard();
         this.winCard.visible = false;
         Laya.stage.addChild(this.winCard);
+    }
+
+    private onNextLevelClick(): void {
+        if (this.nextLevelHandler) {
+            this.nextLevelHandler();
+        }
     }
 
     // 根据当前舞台尺寸保持胜利卡片居中。
@@ -349,6 +409,7 @@ export class ScoreManager {
         }
 
         this.positionWinCard();
+        this.winCard.mouseEnabled = true;
         // 设置为可见
         this.winCard.visible = true;
     }
@@ -362,6 +423,7 @@ export class ScoreManager {
 
         // 设置为隐藏
         this.winCard.visible = false;
+        this.winCard.mouseEnabled = false;
     }
 
     // 重置分数管理器状态

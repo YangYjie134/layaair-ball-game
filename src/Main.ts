@@ -11,7 +11,7 @@ import BallController from "./BallController";
 @regClass()
 export class Main extends Laya.Script {
     private muteKeyHeld: boolean = false;
-    private ballController: any = null;
+    private ballController: BallController | null = null;
     private gameStarted: boolean = false;
 
     onStart() {
@@ -26,13 +26,19 @@ export class Main extends Laya.Script {
             console.error("BallController lookup failed; gameplay remains disabled.");
         }
 
+        ScoreManager.instance.setNextLevelHandler(() => {
+            if (this.ballController) {
+                this.ballController.advanceAfterWin();
+            }
+        });
+
         IntroUI.show(() => this.acceptStartIntent());
         Laya.stage.on(Laya.Event.KEY_DOWN, this, this.onMuteKeyDown);
         Laya.stage.on(Laya.Event.KEY_UP, this, this.onMuteKeyUp);
         console.log("Main menu active");
     }
 
-    private findBallController(): any {
+    private findBallController(): BallController | null {
         const sceneRoot: any = this.owner;
         const ballNode = sceneRoot && typeof sceneRoot.getChildByName === "function"
             ? sceneRoot.getChildByName("Ball")

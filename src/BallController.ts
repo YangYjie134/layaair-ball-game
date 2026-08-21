@@ -688,6 +688,14 @@ export default class BallController extends Laya.Script {
         this.updateLevelText();
     }
 
+    public advanceAfterWin(): void {
+        if (!ScoreManager.instance.isWon()) {
+            return;
+        }
+
+        this.restartGame();
+    }
+
     // 创建关卡显示文本，用于在界面上展示当前关卡编号
     private createLevelText(): void {
         if (this.levelText) return;
