@@ -431,6 +431,19 @@ export default class BallController extends Laya.Script {
     private visualPhase: number = 0;
     private groundVisual: any = null;
     private groundEnergy: any = null;
+    private ballVisualRoot: any = null;
+    private ballAura: any = null;
+    private ballCore: any = null;
+    private ballVisualScaleX: number = 1;
+    private ballVisualScaleY: number = 1;
+    private ballVisualStateReady: boolean = false;
+    private ballWasGrounded: boolean = false;
+    private ballLastVy: number = 0;
+    private ballTrailNodes: any[] = [];
+    private ballTrailHistory: Array<{ x: number; y: number; scaleX: number; scaleY: number }> = [];
+    private ballTrailLastX: number = 0;
+    private ballTrailLastY: number = 0;
+    private boundaryVisuals: Array<{ root: any; scan: any; length: number; phaseOffset: number }> = [];
     private shakeTarget: any = null;
     private shakeBaseX: number = 0;
     private shakeBaseY: number = 0;
@@ -1615,6 +1628,8 @@ export default class BallController extends Laya.Script {
     private initializeVisualLayer(): void {
         this.refreshPlatformVisuals();
         this.syncGroundVisual();
+        this.initializeBallVisual();
+        this.initializeBoundaryVisuals();
         if (!this.visualLoopStarted && typeof Laya.timer?.frameLoop === "function") {
             this.visualLoopStarted = true;
             Laya.timer.frameLoop(1, this, this.updateVisualEffects);
@@ -1792,13 +1807,14 @@ export default class BallController extends Laya.Script {
 
         const width = Math.max(1, platform.width || 1);
         const baseY = Math.max(6, (platform.height || 10) * 0.55);
+        const hoverY = this.getPlatformVisualHover(platformIndex);
         const leftPulse = (Math.sin(this.visualPhase * 1.65 + platformIndex * 0.73) + 1) * 0.5;
         const rightPulse = (Math.sin(this.visualPhase * 1.65 + platformIndex * 0.73 + 1.35) + 1) * 0.5;
 
         left.x = 4;
         right.x = Math.max(4, width - 34);
-        left.y = baseY;
-        right.y = baseY;
+        left.y = baseY + hoverY;
+        right.y = baseY + hoverY;
         left.scaleX = 1;
         left.scaleY = 1;
         right.scaleX = 1;
@@ -1861,6 +1877,271 @@ export default class BallController extends Laya.Script {
         const center = this.getVisualStagePoint(thruster, width * 0.5, height * 0.5);
         return Math.abs(ballPoint.x - center.x) <= ballRadius + width * 0.6
             && Math.abs(ballPoint.y - center.y) <= ballRadius + height * 0.75;
+    }
+
+    private getPlatformVisualHover(platformIndex: number): number {
+        return Math.sin(this.visualPhase * 0.82 + platformIndex * 0.9) * 1.5;
+    }
+
+    private initializeBallVisual(): void {
+        const ball = this.owner as any;
+        const parent = ball?.parent;
+        if (!ball || !parent || typeof ball.addChild !== "function") return;
+
+        this.ballVisualRoot = typeof ball.getChildByName === "function"
+            ? ball.getChildByName("WPD_CyberBall")
+            : null;
+        if (!this.ballVisualRoot) {
+            this.ballVisualRoot = new Laya.Sprite();
+            this.ballVisualRoot.name = "WPD_CyberBall";
+            this.ballVisualRoot.mouseEnabled = false;
+            ball.addChild(this.ballVisualRoot);
+        }
+
+        if (ball.graphics && typeof ball.graphics.clear === "function") {
+            ball.graphics.clear();
+        }
+        ball.zOrder = Math.max(Number(ball.zOrder) || 0, 5);
+
+        this.ballVisualRoot.x = 0;
+        this.ballVisualRoot.y = 0;
+        this.ballVisualRoot.zOrder = 1;
+        this.ballVisualRoot.scaleX = 1;
+        this.ballVisualRoot.scaleY = 1;
+
+        this.ballAura = this.ensureCyberBallPart(this.ballVisualRoot, "WPD_BallAura");
+        const shell = this.ensureCyberBallPart(this.ballVisualRoot, "WPD_BallShell");
+        this.ballCore = this.ensureCyberBallPart(this.ballVisualRoot, "WPD_BallCore");
+        const circuits = this.ensureCyberBallPart(this.ballVisualRoot, "WPD_BallCircuits");
+
+        this.ballAura.zOrder = 0;
+        shell.zOrder = 1;
+        this.ballCore.zOrder = 2;
+        circuits.zOrder = 3;
+
+        this.ballAura.graphics.clear();
+        this.ballAura.graphics.drawCircle(0, 0, 9.5, "#164D68");
+        this.ballAura.graphics.drawCircle(0, 0, 7.3, "#258BC0");
+        this.ballAura.alpha = 0.22;
+
+        shell.graphics.clear();
+        shell.graphics.drawCircle(0, 0, 5.4, "#071824", "#74FAFF", 1.2);
+        shell.graphics.drawPoly(
+            0,
+            0,
+            [0, -5.8, 4.8, -2.7, 4.8, 2.7, 0, 5.8, -4.8, 2.7, -4.8, -2.7],
+            "#0B2637",
+            "#35E9FF",
+            0.8
+        );
+
+        this.ballCore.graphics.clear();
+        this.ballCore.graphics.drawCircle(0, 0, 3.25, "#19DCE8", "#D8FFFF", 0.8);
+        this.ballCore.graphics.drawCircle(0, 0, 1.65, "#F4FFFF");
+
+        circuits.graphics.clear();
+        circuits.graphics.drawLine(-4.2, -1.8, -2.3, -1.1, "#A96CFF", 0.8);
+        circuits.graphics.drawLine(2.3, 1.1, 4.2, 1.8, "#A96CFF", 0.8);
+        circuits.graphics.drawLine(-1.1, 3.4, 0, 5.1, "#53F8FF", 0.8);
+        circuits.graphics.drawLine(1.1, -3.4, 0, -5.1, "#53F8FF", 0.8);
+        circuits.graphics.drawCircle(-3.9, -1.7, 0.65, "#F7B5FF");
+        circuits.graphics.drawCircle(3.9, 1.7, 0.65, "#F7B5FF");
+
+        this.initializeBallTrail(parent, ball);
+    }
+
+    private ensureCyberBallPart(parent: any, name: string): any {
+        let part = typeof parent.getChildByName === "function" ? parent.getChildByName(name) : null;
+        if (!part) {
+            part = new Laya.Sprite();
+            part.name = name;
+            part.mouseEnabled = false;
+            parent.addChild(part);
+        }
+        part.x = 0;
+        part.y = 0;
+        return part;
+    }
+
+    private initializeBallTrail(parent: any, ball: any): void {
+        for (const node of this.ballTrailNodes) {
+            this.destroyVisualNode(node);
+        }
+        this.ballTrailNodes = [];
+        this.ballTrailHistory = [];
+
+        const trailCount = 5;
+        for (let i = 0; i < trailCount; i++) {
+            const trail = new Laya.Sprite();
+            trail.name = "WPD_BallTrail_" + i;
+            trail.mouseEnabled = false;
+            trail.zOrder = Math.max(1, (Number(ball.zOrder) || 5) - 1);
+            trail.alpha = 0;
+            trail.graphics.drawCircle(0, 0, 5.2, "#145270", "#42F5FF", 0.8);
+            trail.graphics.drawCircle(0, 0, 2.4, "#45F1FF");
+            parent.addChild(trail);
+            this.ballTrailNodes.push(trail);
+        }
+
+        this.ballTrailLastX = Number(ball.x) || 0;
+        this.ballTrailLastY = Number(ball.y) || 0;
+    }
+
+    private updateBallVisualEffects(pulse: number): void {
+        const ball = this.owner as any;
+        const visual = this.ballVisualRoot;
+        if (!ball || !visual) return;
+
+        if (!this.ballVisualStateReady) {
+            this.ballVisualStateReady = true;
+            this.ballWasGrounded = this.onGround;
+            this.ballLastVy = this.vy;
+        }
+
+        const landedThisFrame = this.onGround && !this.ballWasGrounded && this.ballLastVy > 1;
+        let targetScaleX = 1;
+        let targetScaleY = 1;
+        let recovery = 0.2;
+
+        if (landedThisFrame) {
+            const impact = Math.min(1, this.ballLastVy / Math.max(1, this.jumpStrength));
+            this.ballVisualScaleX = 1.14 + impact * 0.16;
+            this.ballVisualScaleY = 0.82 - impact * 0.12;
+            recovery = 0.16;
+        } else if (!this.onGround && this.vy < -1.2) {
+            const lift = Math.min(1, Math.abs(this.vy) / Math.max(1, this.jumpStrength));
+            targetScaleX = 1 - lift * 0.16;
+            targetScaleY = 1 + lift * 0.26;
+            recovery = 0.28;
+        } else if (!this.onGround && this.vy > 2) {
+            const fall = Math.min(1, this.vy / Math.max(1, this.jumpStrength));
+            targetScaleX = 1 - fall * 0.07;
+            targetScaleY = 1 + fall * 0.11;
+        }
+
+        this.ballVisualScaleX += (targetScaleX - this.ballVisualScaleX) * recovery;
+        this.ballVisualScaleY += (targetScaleY - this.ballVisualScaleY) * recovery;
+        visual.scaleX = this.ballVisualScaleX;
+        visual.scaleY = this.ballVisualScaleY;
+
+        if (this.ballAura) {
+            const auraScale = 0.94 + pulse * 0.14;
+            this.ballAura.scaleX = auraScale;
+            this.ballAura.scaleY = auraScale;
+            this.ballAura.alpha = 0.14 + pulse * 0.13;
+        }
+        if (this.ballCore) {
+            const coreScale = 0.9 + pulse * 0.18;
+            this.ballCore.scaleX = coreScale;
+            this.ballCore.scaleY = coreScale;
+            this.ballCore.alpha = 0.84 + pulse * 0.16;
+        }
+
+        this.updateBallTrail(ball);
+        this.ballWasGrounded = this.onGround;
+        this.ballLastVy = this.vy;
+    }
+
+    private updateBallTrail(ball: any): void {
+        if (this.ballTrailNodes.length === 0) return;
+
+        const x = Number(ball.x) || 0;
+        const y = Number(ball.y) || 0;
+        const teleportDistance = Math.abs(x - this.ballTrailLastX) + Math.abs(y - this.ballTrailLastY);
+        if (teleportDistance > 90) {
+            this.ballTrailHistory = [];
+        }
+        this.ballTrailLastX = x;
+        this.ballTrailLastY = y;
+
+        this.ballTrailHistory.unshift({
+            x,
+            y,
+            scaleX: this.ballVisualScaleX,
+            scaleY: this.ballVisualScaleY,
+        });
+        const maxHistory = this.ballTrailNodes.length * 2 + 1;
+        if (this.ballTrailHistory.length > maxHistory) {
+            this.ballTrailHistory.length = maxHistory;
+        }
+
+        const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+        const motionAlpha = Math.max(0, Math.min(1, (speed - 0.35) / 6));
+        for (let i = 0; i < this.ballTrailNodes.length; i++) {
+            const trail = this.ballTrailNodes[i];
+            const sample = this.ballTrailHistory[Math.min(this.ballTrailHistory.length - 1, (i + 1) * 2)];
+            if (!sample || motionAlpha <= 0) {
+                trail.alpha = 0;
+                continue;
+            }
+            trail.x = sample.x;
+            trail.y = sample.y;
+            trail.scaleX = sample.scaleX * (1 - i * 0.045);
+            trail.scaleY = sample.scaleY * (1 - i * 0.045);
+            trail.alpha = motionAlpha * 0.24 * Math.pow(0.55, i);
+        }
+    }
+
+    private initializeBoundaryVisuals(): void {
+        this.boundaryVisuals = [];
+        const walls = [this.topWall, this.leftWall, this.rightWall];
+        for (let index = 0; index < walls.length; index++) {
+            const wall = walls[index];
+            if (!wall || typeof wall.addChild !== "function") continue;
+
+            let root = typeof wall.getChildByName === "function"
+                ? wall.getChildByName("WPD_CyberBoundary")
+                : null;
+            if (!root) {
+                root = new Laya.Sprite();
+                root.name = "WPD_CyberBoundary";
+                root.mouseEnabled = false;
+                wall.addChild(root);
+            }
+            let scan = typeof root.getChildByName === "function"
+                ? root.getChildByName("WPD_BoundaryScan")
+                : null;
+            if (!scan) {
+                scan = new Laya.Sprite();
+                scan.name = "WPD_BoundaryScan";
+                scan.mouseEnabled = false;
+                root.addChild(scan);
+            }
+
+            const length = Math.max(1, Number(wall.width) || 1);
+            const thickness = Math.max(4, Number(wall.height) || 4);
+            root.x = 0;
+            root.y = 0;
+            root.width = length;
+            root.height = thickness;
+            root.zOrder = 2;
+            root.graphics.clear();
+            root.graphics.drawRect(0, 0, length, thickness, "#071521", "#35E9FF", 1.2);
+            root.graphics.drawLine(0, 2, length, 2, "#9C70FF", 1);
+            root.graphics.drawLine(0, thickness - 2, length, thickness - 2, "#45F6FF", 1.4);
+            for (let x = 18; x < length; x += 58) {
+                const segmentEnd = Math.min(length, x + 24);
+                root.graphics.drawLine(x, thickness * 0.5, segmentEnd, thickness * 0.5, "#1A708A", 1);
+                root.graphics.drawCircle(x - 5, thickness * 0.5, 1.25, index === 0 ? "#72F8FF" : "#B887FF");
+            }
+
+            scan.y = 4;
+            scan.zOrder = 1;
+            scan.graphics.clear();
+            scan.graphics.drawRect(0, 0, 42, Math.max(2, thickness - 8), "#59F7FF");
+            scan.alpha = 0.18;
+            this.boundaryVisuals.push({ root, scan, length, phaseOffset: index * 0.31 });
+        }
+    }
+
+    private updateBoundaryVisuals(pulse: number): void {
+        for (const visual of this.boundaryVisuals) {
+            const travel = visual.length + 42;
+            const progress = (this.visualPhase * 0.018 + visual.phaseOffset) % 1;
+            visual.scan.x = progress * travel - 42;
+            visual.scan.alpha = 0.08 + pulse * 0.13;
+            visual.root.alpha = 0.9 + pulse * 0.08;
+        }
     }
 
     private syncGroundVisual(): void {
@@ -2014,6 +2295,7 @@ export default class BallController extends Laya.Script {
                 ? platform.getChildByName("WPA_HoloSide")
                 : null;
             if (holoSide) {
+                holoSide.y = this.getPlatformVisualHover(platformVisualIndex);
                 const disappear = this.disappearConfigs.get(platform);
                 holoSide.alpha = this.movingConfigs.has(platform) || disappear?.state === "counting"
                     ? 0.58 + pulse * 0.34
@@ -2038,6 +2320,8 @@ export default class BallController extends Laya.Script {
                 energy.alpha = 0.35 + pulse * 0.65;
             }
         }
+        this.updateBallVisualEffects(pulse);
+        this.updateBoundaryVisuals(pulse);
         this.updateDeathFeedback();
     }
 
@@ -2051,5 +2335,14 @@ export default class BallController extends Laya.Script {
         this.levelTransitionPending = false;
         this.groundVisual = null;
         this.groundEnergy = null;
+        for (const trail of this.ballTrailNodes) {
+            this.destroyVisualNode(trail);
+        }
+        this.ballTrailNodes = [];
+        this.ballTrailHistory = [];
+        this.ballVisualRoot = null;
+        this.ballAura = null;
+        this.ballCore = null;
+        this.boundaryVisuals = [];
     }
 }
