@@ -1,6 +1,78 @@
 declare var Laya: any;
 import { SfxManager } from "./SfxManager";
 
+type WinAuraPoint = { x: number; y: number };
+
+type WinGlyphLayout = {
+    character: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    centerX: number;
+    centerY: number;
+    fontSize: number;
+};
+
+type WinGlyphAuraSystem = {
+    character: string;
+    path: WinAuraPoint[];
+    segmentLengths: number[];
+    totalLength: number;
+    centerX: number;
+    centerY: number;
+    phaseOffset: number;
+    rimGlow: any;
+    rimCore: any;
+    energyHead: any;
+    particles: any[];
+    spark: any;
+};
+
+// 固定标题 YOU WIN 的归一化字形轮廓模板；仅作为不可见的光效运动路径。
+const WIN_GLYPH_AURA_TEMPLATES: Record<string, WinAuraPoint[]> = {
+    Y: [
+        { x: 0, y: 0 }, { x: 0.23, y: 0 }, { x: 0.5, y: 0.35 },
+        { x: 0.77, y: 0 }, { x: 1, y: 0 }, { x: 0.62, y: 0.52 },
+        { x: 0.62, y: 1 }, { x: 0.38, y: 1 }, { x: 0.38, y: 0.52 },
+    ],
+    O: [
+        { x: 0.5, y: 0 }, { x: 0.7, y: 0.03 }, { x: 0.86, y: 0.12 },
+        { x: 0.97, y: 0.28 }, { x: 1, y: 0.5 }, { x: 0.97, y: 0.72 },
+        { x: 0.86, y: 0.88 }, { x: 0.7, y: 0.97 }, { x: 0.5, y: 1 },
+        { x: 0.3, y: 0.97 }, { x: 0.14, y: 0.88 }, { x: 0.03, y: 0.72 },
+        { x: 0, y: 0.5 }, { x: 0.03, y: 0.28 }, { x: 0.14, y: 0.12 },
+        { x: 0.3, y: 0.03 },
+    ],
+    U: [
+        { x: 0, y: 0 }, { x: 0, y: 0.68 }, { x: 0.08, y: 0.86 },
+        { x: 0.24, y: 0.97 }, { x: 0.5, y: 1 }, { x: 0.76, y: 0.97 },
+        { x: 0.92, y: 0.86 }, { x: 1, y: 0.68 }, { x: 1, y: 0 },
+        { x: 0.76, y: 0 }, { x: 0.76, y: 0.65 }, { x: 0.7, y: 0.74 },
+        { x: 0.62, y: 0.79 }, { x: 0.5, y: 0.81 }, { x: 0.38, y: 0.79 },
+        { x: 0.3, y: 0.74 }, { x: 0.24, y: 0.65 }, { x: 0.24, y: 0 },
+    ],
+    W: [
+        { x: 0, y: 0 }, { x: 0.2, y: 0 }, { x: 0.32, y: 0.66 },
+        { x: 0.43, y: 0.28 }, { x: 0.57, y: 0.28 }, { x: 0.68, y: 0.66 },
+        { x: 0.8, y: 0 }, { x: 1, y: 0 }, { x: 0.79, y: 1 },
+        { x: 0.61, y: 1 }, { x: 0.5, y: 0.65 }, { x: 0.39, y: 1 },
+        { x: 0.21, y: 1 },
+    ],
+    I: [
+        { x: 0.18, y: 0 }, { x: 0.82, y: 0 }, { x: 0.82, y: 0.12 },
+        { x: 0.62, y: 0.12 }, { x: 0.62, y: 0.88 }, { x: 0.82, y: 0.88 },
+        { x: 0.82, y: 1 }, { x: 0.18, y: 1 }, { x: 0.18, y: 0.88 },
+        { x: 0.38, y: 0.88 }, { x: 0.38, y: 0.12 }, { x: 0.18, y: 0.12 },
+    ],
+    N: [
+        { x: 0, y: 0 }, { x: 0.24, y: 0 }, { x: 0.76, y: 0.66 },
+        { x: 0.76, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 },
+        { x: 0.76, y: 1 }, { x: 0.24, y: 0.34 }, { x: 0.24, y: 1 },
+        { x: 0, y: 1 },
+    ],
+};
+
 // 分数管理器：负责游戏分数的计算、显示和获胜判定
 export class ScoreManager {
     // 单例实例，确保全局只存在一个分数管理器
@@ -25,12 +97,19 @@ export class ScoreManager {
     private winCard: any = null;
     private winText: any = null;
     private nextLevelHandler: (() => void) | null = null;
+    private nextLevelButton: any = null;
+    private nextLevelLabel: any = null;
+    private winGoldenAura: any = null;
+    private winGoldenGlyphSystems: WinGlyphAuraSystem[] = [];
+    private winGoldenLoopStarted: boolean = false;
+    private winGoldenPhase: number = 0;
     // 是否已经获胜
     private hasWon: boolean = false;
     // 获胜所需分数
     private readonly winScore: number = 5;
     // 已经得分过的平台集合（防止重复计分）
     private scoredPlatforms: Set<string> = new Set<string>();
+    private readonly scoreFeedbackDurationMs: number = 260;
 
     // 初始化分数管理器，重置分数状态并创建界面文本
     public init(): void {
@@ -212,6 +291,7 @@ export class ScoreManager {
         this.winText.y = 62;
         this.winText.width = cardWidth - 112;
         this.winText.height = 82;
+        this.createWinGoldenAura(cardWidth, cardHeight);
         this.winCard.addChild(this.winText);
 
         const scoreStatus = new Laya.Text();
@@ -231,24 +311,15 @@ export class ScoreManager {
         const buttonWidth = 260;
         const buttonHeight = 48;
         const nextLevelButton = new Laya.Sprite();
+        this.nextLevelButton = nextLevelButton;
         nextLevelButton.x = Math.round((cardWidth - buttonWidth) / 2);
         nextLevelButton.y = 200;
         nextLevelButton.width = buttonWidth;
         nextLevelButton.height = buttonHeight;
         nextLevelButton.mouseEnabled = true;
-        nextLevelButton.graphics.drawPoly(
-            0,
-            0,
-            [8, 0, buttonWidth - 8, 0, buttonWidth, 8, buttonWidth, buttonHeight - 8,
-                buttonWidth - 8, buttonHeight, 8, buttonHeight, 0, buttonHeight - 8, 0, 8],
-            "#0A2432",
-            "#39F4FF",
-            2
-        );
-        nextLevelButton.graphics.drawLine(18, 5, 88, 5, "#8B5CFF", 2);
-        nextLevelButton.graphics.drawLine(buttonWidth - 70, buttonHeight - 5, buttonWidth - 18, buttonHeight - 5, "#39F4FF", 1);
 
         const nextLevelLabel = new Laya.Text();
+        this.nextLevelLabel = nextLevelLabel;
         nextLevelLabel.text = "NEXT LEVEL";
         nextLevelLabel.font = "Arial";
         nextLevelLabel.fontSize = 19;
@@ -260,7 +331,12 @@ export class ScoreManager {
         nextLevelLabel.valign = "middle";
         nextLevelLabel.mouseEnabled = false;
         nextLevelButton.addChild(nextLevelLabel);
+        this.drawNextLevelButton("normal");
         nextLevelButton.on(Laya.Event.CLICK, this, this.onNextLevelClick);
+        nextLevelButton.on(Laya.Event.MOUSE_OVER, this, this.onNextLevelOver);
+        nextLevelButton.on(Laya.Event.MOUSE_OUT, this, this.onNextLevelOut);
+        nextLevelButton.on(Laya.Event.MOUSE_DOWN, this, this.onNextLevelDown);
+        nextLevelButton.on(Laya.Event.MOUSE_UP, this, this.onNextLevelUp);
         this.winCard.addChild(nextLevelButton);
 
         const restartHint = new Laya.Text();
@@ -285,6 +361,430 @@ export class ScoreManager {
     private onNextLevelClick(): void {
         if (this.nextLevelHandler) {
             this.nextLevelHandler();
+        }
+    }
+
+    private drawNextLevelButton(state: "normal" | "hover" | "pressed"): void {
+        const button = this.nextLevelButton;
+        if (!button?.graphics) return;
+
+        const buttonWidth = button.width || 260;
+        const buttonHeight = button.height || 48;
+        const fill = state === "pressed" ? "#12384A" : state === "hover" ? "#0D3040" : "#0A2432";
+        const border = state === "pressed" ? "#B8FBFF" : state === "hover" ? "#70FAFF" : "#39F4FF";
+
+        button.graphics.clear();
+        button.graphics.drawPoly(
+            0,
+            0,
+            [8, 0, buttonWidth - 8, 0, buttonWidth, 8, buttonWidth, buttonHeight - 8,
+                buttonWidth - 8, buttonHeight, 8, buttonHeight, 0, buttonHeight - 8, 0, 8],
+            fill,
+            border,
+            state === "hover" ? 3 : 2
+        );
+        button.graphics.drawLine(18, 5, 88, 5, state === "normal" ? "#8B5CFF" : "#B69BFF", 2);
+        button.graphics.drawLine(
+            buttonWidth - 70,
+            buttonHeight - 5,
+            buttonWidth - 18,
+            buttonHeight - 5,
+            border,
+            1
+        );
+        button.alpha = state === "pressed" ? 0.88 : 1;
+        if (this.nextLevelLabel) {
+            this.nextLevelLabel.color = state === "normal" ? "#DDFCFF" : "#FFFFFF";
+        }
+    }
+
+    private onNextLevelOver(): void {
+        this.drawNextLevelButton("hover");
+    }
+
+    private onNextLevelOut(): void {
+        this.drawNextLevelButton("normal");
+    }
+
+    private onNextLevelDown(): void {
+        this.drawNextLevelButton("pressed");
+    }
+
+    private onNextLevelUp(): void {
+        this.drawNextLevelButton("hover");
+    }
+
+    private createWinGoldenAura(cardWidth: number, cardHeight: number): void {
+        if (this.winGoldenAura || !this.winCard || !this.winText) return;
+
+        const aura = new Laya.Sprite();
+        aura.name = "WPB_WinGoldenAura";
+        aura.width = cardWidth;
+        aura.height = cardHeight;
+        aura.mouseEnabled = false;
+        aura.visible = false;
+        // 胜利光环固定在底板之上、全部文字与交互控件之下。
+        this.winCard.addChildAt(aura, Math.min(1, this.winCard.numChildren));
+        this.winGoldenAura = aura;
+
+        const glyphLayouts = this.getWinGlyphLayouts();
+        this.winGoldenGlyphSystems = [];
+        for (let glyphIndex = 0; glyphIndex < glyphLayouts.length; glyphIndex++) {
+            const layout = glyphLayouts[glyphIndex];
+            const template = WIN_GLYPH_AURA_TEMPLATES[layout.character];
+            if (!template) continue;
+
+            const path = this.buildWinGlyphAuraPath(layout, template);
+            const metrics = this.getWinClosedPathMetrics(path);
+            const glyphRoot = new Laya.Sprite();
+            glyphRoot.name = "WPB_GlyphAura_" + layout.character;
+            glyphRoot.mouseEnabled = false;
+            aura.addChild(glyphRoot);
+
+            const rimGlow = new Laya.Sprite();
+            rimGlow.name = "WPB_GlyphRimGlow_" + layout.character;
+            rimGlow.mouseEnabled = false;
+            this.drawWinGlyphAuraPath(rimGlow, path, "#FFD700", 5.5);
+            glyphRoot.addChild(rimGlow);
+
+            const rimCore = new Laya.Sprite();
+            rimCore.name = "WPB_GlyphRimCore_" + layout.character;
+            rimCore.mouseEnabled = false;
+            this.drawWinGlyphAuraPath(rimCore, path, "#FFE45C", 1.5);
+            glyphRoot.addChild(rimCore);
+
+            const particles: any[] = [];
+            const particlePalette = ["#FFD700", "#FFE45C", "#FFE082", "#FFF7B0"];
+            for (let particleIndex = 0; particleIndex < 7; particleIndex++) {
+                const particle = new Laya.Sprite();
+                particle.name = "WPB_GlyphParticle_" + layout.character + "_" + particleIndex;
+                particle.mouseEnabled = false;
+                const radius = particleIndex < 5
+                    ? 0.85 + (particleIndex % 3) * 0.18
+                    : 0.7 + (particleIndex % 2) * 0.14;
+                particle.graphics.drawCircle(0, 0, radius, particlePalette[particleIndex % particlePalette.length]);
+                glyphRoot.addChild(particle);
+                particles.push(particle);
+            }
+
+            const spark = new Laya.Sprite();
+            spark.name = "WPB_GlyphSpark_" + layout.character;
+            spark.mouseEnabled = false;
+            spark.graphics.drawLine(-3.2, 0, 3.2, 0, "#FFF7B0", 1.2);
+            spark.graphics.drawLine(0, -3.2, 0, 3.2, "#FFF7B0", 1.2);
+            spark.graphics.drawCircle(0, 0, 1.05, "#FFFFFF");
+            glyphRoot.addChild(spark);
+
+            // 每个 carrier 只有一个主能量头；短尾绘制在同一 Graphics 中。
+            const energyHead = new Laya.Sprite();
+            energyHead.name = "WPB_GlyphEnergyHead_" + layout.character;
+            energyHead.mouseEnabled = false;
+            glyphRoot.addChild(energyHead);
+
+            this.winGoldenGlyphSystems.push({
+                character: layout.character,
+                path,
+                segmentLengths: metrics.segmentLengths,
+                totalLength: metrics.totalLength,
+                centerX: layout.centerX,
+                centerY: layout.centerY,
+                phaseOffset: glyphIndex / glyphLayouts.length,
+                rimGlow,
+                rimCore,
+                energyHead,
+                particles,
+                spark,
+            });
+        }
+
+        this.updateWinGoldenAura();
+    }
+
+    private createWinTextMeasureContext(fontSize: number, fontName: string, bold: boolean): any {
+        const globalDocument = typeof document !== "undefined" ? document : null;
+        const browserDocument = Laya.Browser?.document || globalDocument;
+        const canvas = browserDocument?.createElement?.("canvas");
+        const context = canvas?.getContext?.("2d");
+        if (!context || typeof context.measureText !== "function") return null;
+
+        const family = fontName.includes(" ") ? '"' + fontName + '"' : fontName;
+        context.font = (bold ? "bold " : "") + fontSize + "px " + family;
+        context.textAlign = "left";
+        context.textBaseline = "alphabetic";
+        return context;
+    }
+
+    private measureWinTextSpan(
+        content: string,
+        context: any,
+        fontSize: number,
+        fontName: string,
+        bold: boolean
+    ): number {
+        if (content.length === 0) return 0;
+        if (context && typeof context.measureText === "function") {
+            const measuredWidth = Number(context.measureText(content).width);
+            if (Number.isFinite(measuredWidth) && measuredWidth > 0) return measuredWidth;
+        }
+
+        const probe = new Laya.Text();
+        probe.font = fontName;
+        probe.fontSize = fontSize;
+        probe.bold = bold;
+        probe.text = content;
+        const layaMeasuredWidth = Number(probe.textWidth);
+        if (typeof probe.destroy === "function") {
+            probe.destroy(true);
+        }
+        if (Number.isFinite(layaMeasuredWidth) && layaMeasuredWidth > 0) return layaMeasuredWidth;
+
+        return Array.from(content).length * fontSize * 0.6;
+    }
+
+    private getWinGlyphLayouts(): WinGlyphLayout[] {
+        const textNode = this.winText;
+        if (!textNode) return [];
+
+        const content = String(textNode.text || "YOU WIN");
+        const fontSize = Math.max(1, Number(textNode.fontSize) || 52);
+        const fontName = String(textNode.font || "Arial");
+        const bold = Boolean(textNode.bold);
+        const textX = Number(textNode.x) || 0;
+        const textY = Number(textNode.y) || 0;
+        const textWidth = Math.max(fontSize, Number(textNode.width) || fontSize);
+        const textHeight = Math.max(fontSize, Number(textNode.height) || fontSize);
+        const context = this.createWinTextMeasureContext(fontSize, fontName, bold);
+        const measuredTextWidth = this.measureWinTextSpan(content, context, fontSize, fontName, bold);
+
+        let textStartX = textX;
+        if (textNode.align === "center") {
+            textStartX += (textWidth - measuredTextWidth) * 0.5;
+        } else if (textNode.align === "right") {
+            textStartX += textWidth - measuredTextWidth;
+        }
+
+        const lineBoxHeight = Math.min(textHeight, fontSize);
+        let lineTop = textY;
+        if (textNode.valign === "middle") {
+            lineTop += (textHeight - lineBoxHeight) * 0.5;
+        } else if (textNode.valign === "bottom") {
+            lineTop += textHeight - lineBoxHeight;
+        }
+
+        const layouts: WinGlyphLayout[] = [];
+        for (let characterIndex = 0; characterIndex < content.length; characterIndex++) {
+            const character = content.charAt(characterIndex);
+            if (character === " ") continue;
+
+            const prefixWidth = this.measureWinTextSpan(
+                content.slice(0, characterIndex), context, fontSize, fontName, bold
+            );
+            const nextPrefixWidth = this.measureWinTextSpan(
+                content.slice(0, characterIndex + 1), context, fontSize, fontName, bold
+            );
+            const advanceWidth = Math.max(1, nextPrefixWidth - prefixWidth);
+            const glyphMetrics = context?.measureText?.(character);
+            const actualLeft = Math.max(0, Number(glyphMetrics?.actualBoundingBoxLeft) || 0);
+            const actualRight = Math.max(0, Number(glyphMetrics?.actualBoundingBoxRight) || 0);
+            const actualAscent = Math.max(0, Number(glyphMetrics?.actualBoundingBoxAscent) || 0);
+            const actualDescent = Math.max(0, Number(glyphMetrics?.actualBoundingBoxDescent) || 0);
+            const measuredInkWidth = actualLeft + actualRight;
+            const measuredInkHeight = actualAscent + actualDescent;
+            const glyphWidth = Math.max(1, measuredInkWidth || advanceWidth);
+            const glyphHeight = Math.max(
+                fontSize * 0.68,
+                Math.min(lineBoxHeight, measuredInkHeight || lineBoxHeight * 0.82)
+            );
+            const glyphX = textStartX + prefixWidth - actualLeft;
+            const glyphY = lineTop + (lineBoxHeight - glyphHeight) * 0.5;
+
+            layouts.push({
+                character,
+                x: glyphX,
+                y: glyphY,
+                width: glyphWidth,
+                height: glyphHeight,
+                centerX: glyphX + glyphWidth * 0.5,
+                centerY: glyphY + glyphHeight * 0.5,
+                fontSize,
+            });
+        }
+        return layouts;
+    }
+
+    private buildWinGlyphAuraPath(layout: WinGlyphLayout, template: WinAuraPoint[]): WinAuraPoint[] {
+        const offset = Math.max(4, Math.min(6, layout.fontSize * 0.1));
+        return template.map((normalizedPoint) => {
+            const glyphPointX = layout.x + normalizedPoint.x * layout.width;
+            const glyphPointY = layout.y + normalizedPoint.y * layout.height;
+            const fromCenterX = glyphPointX - layout.centerX;
+            const fromCenterY = glyphPointY - layout.centerY;
+            const distance = Math.max(0.001, Math.sqrt(fromCenterX * fromCenterX + fromCenterY * fromCenterY));
+            return {
+                x: glyphPointX + fromCenterX / distance * offset,
+                y: glyphPointY + fromCenterY / distance * offset,
+            };
+        });
+    }
+
+    private getWinClosedPathMetrics(path: WinAuraPoint[]): {
+        segmentLengths: number[];
+        totalLength: number;
+    } {
+        const segmentLengths: number[] = [];
+        let totalLength = 0;
+        for (let i = 0; i < path.length; i++) {
+            const start = path[i];
+            const end = path[(i + 1) % path.length];
+            const deltaX = end.x - start.x;
+            const deltaY = end.y - start.y;
+            const segmentLength = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+            segmentLengths.push(segmentLength);
+            totalLength += segmentLength;
+        }
+        return { segmentLengths, totalLength };
+    }
+
+    private drawWinGlyphAuraPath(node: any, path: WinAuraPoint[], color: string, lineWidth: number): void {
+        if (!node?.graphics || path.length < 2) return;
+
+        node.graphics.clear();
+        for (let i = 0; i < path.length; i++) {
+            const start = path[i];
+            const end = path[(i + 1) % path.length];
+            node.graphics.drawLine(start.x, start.y, end.x, end.y, color, lineWidth);
+        }
+    }
+
+    private getWinGlyphPathPoint(system: WinGlyphAuraSystem, progress: number): WinAuraPoint {
+        if (system.path.length === 0 || system.totalLength <= 0) {
+            return { x: system.centerX, y: system.centerY };
+        }
+
+        const normalizedProgress = ((progress % 1) + 1) % 1;
+        const targetDistance = normalizedProgress * system.totalLength;
+        let traversedDistance = 0;
+        for (let i = 0; i < system.path.length; i++) {
+            const segmentLength = system.segmentLengths[i];
+            if (targetDistance <= traversedDistance + segmentLength || i === system.path.length - 1) {
+                const segmentProgress = segmentLength > 0
+                    ? (targetDistance - traversedDistance) / segmentLength
+                    : 0;
+                const start = system.path[i];
+                const end = system.path[(i + 1) % system.path.length];
+                return {
+                    x: start.x + (end.x - start.x) * segmentProgress,
+                    y: start.y + (end.y - start.y) * segmentProgress,
+                };
+            }
+            traversedDistance += segmentLength;
+        }
+        return system.path[0];
+    }
+
+    private startWinGoldenAura(): void {
+        if (!this.winGoldenAura) return;
+
+        this.stopWinGoldenAura();
+        this.winGoldenPhase = 0;
+        this.winGoldenAura.visible = true;
+        this.updateWinGoldenAura();
+        if (typeof Laya.timer?.frameLoop === "function") {
+            this.winGoldenLoopStarted = true;
+            Laya.timer.frameLoop(1, this, this.updateWinGoldenAura);
+        }
+    }
+
+    private stopWinGoldenAura(): void {
+        if (typeof Laya.timer?.clear === "function") {
+            Laya.timer.clear(this, this.updateWinGoldenAura);
+        }
+        this.winGoldenLoopStarted = false;
+        this.winGoldenPhase = 0;
+        if (this.winGoldenAura) {
+            this.winGoldenAura.visible = false;
+        }
+    }
+
+    private updateWinGoldenAura(): void {
+        const aura = this.winGoldenAura;
+        if (!aura || this.winGoldenGlyphSystems.length === 0) return;
+
+        this.winGoldenPhase = (this.winGoldenPhase + 0.003) % 1;
+        const fullPhaseAngle = this.winGoldenPhase * Math.PI * 2;
+        const trailPalette = ["#9A6500", "#CE8F00", "#FFD700", "#FFE45C"];
+
+        for (let systemIndex = 0; systemIndex < this.winGoldenGlyphSystems.length; systemIndex++) {
+            const system = this.winGoldenGlyphSystems[systemIndex];
+            const staggeredAngle = fullPhaseAngle + system.phaseOffset * Math.PI * 2;
+            const breath = (Math.sin(staggeredAngle) + 1) * 0.5;
+            system.rimGlow.alpha = 0.14 + breath * 0.12;
+            system.rimCore.alpha = 0.42 + breath * 0.14;
+
+            const headPhase = (this.winGoldenPhase + system.phaseOffset) % 1;
+            system.energyHead.graphics.clear();
+            for (let tailIndex = 4; tailIndex >= 1; tailIndex--) {
+                const tailPoint = this.getWinGlyphPathPoint(system, headPhase - tailIndex * 0.018);
+                system.energyHead.graphics.drawCircle(
+                    tailPoint.x,
+                    tailPoint.y,
+                    0.65 + (4 - tailIndex) * 0.2,
+                    trailPalette[4 - tailIndex]
+                );
+            }
+            const headPoint = this.getWinGlyphPathPoint(system, headPhase);
+            system.energyHead.graphics.drawCircle(headPoint.x, headPoint.y, 3.2, "#FFD700");
+            system.energyHead.graphics.drawCircle(headPoint.x, headPoint.y, 1.6, "#FFF7B0");
+            system.energyHead.graphics.drawCircle(headPoint.x, headPoint.y, 0.7, "#FFFFFF");
+            system.energyHead.alpha = 0.82 + breath * 0.12;
+
+            for (let particleIndex = 0; particleIndex < system.particles.length; particleIndex++) {
+                const particle = system.particles[particleIndex];
+                const life = (
+                    this.winGoldenPhase * 0.72
+                    + particleIndex / system.particles.length
+                    + systemIndex * 0.091
+                ) % 1;
+                const particlePathPhase = (
+                    particleIndex / system.particles.length
+                    + system.phaseOffset * 0.37
+                    + this.winGoldenPhase * 0.11
+                ) % 1;
+                const pathPoint = this.getWinGlyphPathPoint(system, particlePathPhase);
+                const outwardX = pathPoint.x - system.centerX;
+                const outwardY = pathPoint.y - system.centerY;
+                const outwardLength = Math.max(0.001, Math.sqrt(outwardX * outwardX + outwardY * outwardY));
+                const isNearContour = particleIndex < 5;
+                const outwardDistance = isNearContour
+                    ? 0.4 + (Math.sin(staggeredAngle * 0.7 + particleIndex * 1.6) + 1) * 0.55
+                    : 4 + life * 4;
+                particle.x = pathPoint.x + outwardX / outwardLength * outwardDistance;
+                particle.y = pathPoint.y + outwardY / outwardLength * outwardDistance;
+                if (isNearContour) {
+                    const twinkle = (Math.sin(staggeredAngle * 1.3 + particleIndex * 1.47) + 1) * 0.5;
+                    particle.alpha = 0.3 + twinkle * 0.3;
+                } else {
+                    particle.alpha = 0.1 + (1 - life) * 0.26;
+                }
+            }
+
+            const sparkPathPhase = (
+                system.phaseOffset + 0.28 + this.winGoldenPhase * 0.16
+            ) % 1;
+            const sparkPoint = this.getWinGlyphPathPoint(system, sparkPathPhase);
+            const sparkOutwardX = sparkPoint.x - system.centerX;
+            const sparkOutwardY = sparkPoint.y - system.centerY;
+            const sparkOutwardLength = Math.max(
+                0.001,
+                Math.sqrt(sparkOutwardX * sparkOutwardX + sparkOutwardY * sparkOutwardY)
+            );
+            system.spark.x = sparkPoint.x + sparkOutwardX / sparkOutwardLength * 1.5;
+            system.spark.y = sparkPoint.y + sparkOutwardY / sparkOutwardLength * 1.5;
+            const sparkPulse = (Math.sin(staggeredAngle * 1.7) + 1) * 0.5;
+            system.spark.alpha = 0.12 + sparkPulse * 0.58;
+            const sparkScale = 0.72 + sparkPulse * 0.32;
+            system.spark.scaleX = sparkScale;
+            system.spark.scaleY = sparkScale;
         }
     }
 
@@ -357,6 +857,7 @@ export class ScoreManager {
         this.scoredPlatforms.add(platformName);
         // 增加分数
         this.score++;
+        this.playScoreFeedback(platform);
 
         // 更新分数显示
         this.updateScoreText();
@@ -369,6 +870,133 @@ export class ScoreManager {
             "score =",
             this.score
         );
+    }
+
+    private playScoreFeedback(platform: any): void {
+        SfxManager.playScore();
+        this.playPlatformScoreFeedback(platform);
+    }
+
+    private playPlatformScoreFeedback(platform: any): void {
+        let feedbackRoot: any = null;
+
+        try {
+            if (!platform || typeof platform.addChild !== "function") return;
+
+            const platformWidth = Math.max(1, Number(platform.width) || 1);
+            const platformHeight = Math.max(1, Number(platform.height) || 1);
+
+            feedbackRoot = new Laya.Sprite();
+            feedbackRoot.name = "WPC_ScoreFeedback";
+            feedbackRoot.width = platformWidth;
+            feedbackRoot.height = platformHeight;
+            feedbackRoot.zOrder = 1000;
+            feedbackRoot.mouseEnabled = false;
+            platform.addChild(feedbackRoot);
+
+            const flash = new Laya.Sprite();
+            flash.mouseEnabled = false;
+            flash.graphics.drawRect(
+                -3,
+                -3,
+                platformWidth + 6,
+                platformHeight + 6,
+                "#DFFFFF",
+                "#35E9FF",
+                2
+            );
+            flash.graphics.drawLine(0, 1, platformWidth, 1, "#FFFFFF", 2);
+            feedbackRoot.addChild(flash);
+
+            const particlePalette = ["#FFFFFF", "#35E9FF", "#8B5CFF"];
+            const particles: Array<{
+                node: any;
+                startX: number;
+                startY: number;
+                driftX: number;
+                rise: number;
+            }> = [];
+
+            for (let index = 0; index < 6; index++) {
+                const particle = new Laya.Sprite();
+                const radius = index % 3 === 0 ? 2.2 : 1.5;
+                particle.mouseEnabled = false;
+                particle.graphics.drawCircle(0, 0, radius, particlePalette[index % particlePalette.length]);
+                feedbackRoot.addChild(particle);
+
+                particles.push({
+                    node: particle,
+                    startX: platformWidth * (index + 1) / 7,
+                    startY: index % 2 === 0 ? 1 : platformHeight * 0.35,
+                    driftX: (index - 2.5) * 3.2,
+                    rise: 16 + index % 3 * 5,
+                });
+            }
+
+            const readNow = (): number => {
+                const timerValue = Number(Laya.timer?.currTimer);
+                return Number.isFinite(timerValue) ? timerValue : Date.now();
+            };
+            const startedAt = readNow();
+            let finished = false;
+
+            const updateScoreFeedback = (): void => {
+                if (finished) return;
+                if (feedbackRoot?.destroyed) {
+                    finishScoreFeedback();
+                    return;
+                }
+
+                const elapsed = Math.max(0, readNow() - startedAt);
+                const progress = Math.min(1, elapsed / this.scoreFeedbackDurationMs);
+                const eased = 1 - Math.pow(1 - progress, 2);
+
+                flash.alpha = 0.72 * Math.pow(1 - progress, 2);
+                for (const particle of particles) {
+                    particle.node.x = particle.startX + particle.driftX * eased;
+                    particle.node.y = particle.startY - particle.rise * eased;
+                    particle.node.alpha = progress < 0.12
+                        ? progress / 0.12
+                        : Math.pow(1 - progress, 1.35);
+                    const scale = 0.8 + progress * 0.45;
+                    particle.node.scaleX = scale;
+                    particle.node.scaleY = scale;
+                }
+
+                if (progress >= 1) finishScoreFeedback();
+            };
+
+            const finishScoreFeedback = (): void => {
+                if (finished) return;
+                finished = true;
+                if (typeof Laya.timer?.clear === "function") {
+                    Laya.timer.clear(feedbackRoot, updateScoreFeedback);
+                    Laya.timer.clear(feedbackRoot, finishScoreFeedback);
+                }
+                try {
+                    if (typeof feedbackRoot?.removeSelf === "function") feedbackRoot.removeSelf();
+                    if (typeof feedbackRoot?.destroy === "function") feedbackRoot.destroy(true);
+                } catch (_) {
+                    // Scene teardown may already have removed the temporary feedback node.
+                }
+            };
+
+            updateScoreFeedback();
+            if (typeof Laya.timer?.frameLoop === "function") {
+                Laya.timer.frameLoop(1, feedbackRoot, updateScoreFeedback);
+            } else if (typeof Laya.timer?.once === "function") {
+                Laya.timer.once(this.scoreFeedbackDurationMs, feedbackRoot, finishScoreFeedback);
+            } else {
+                finishScoreFeedback();
+            }
+        } catch (_) {
+            try {
+                if (typeof feedbackRoot?.removeSelf === "function") feedbackRoot.removeSelf();
+                if (typeof feedbackRoot?.destroy === "function") feedbackRoot.destroy(true);
+            } catch (_) {
+                // Visual feedback is best-effort and must never affect scoring.
+            }
+        }
     }
 
     // 更新分数显示文本
@@ -412,6 +1040,7 @@ export class ScoreManager {
         this.winCard.mouseEnabled = true;
         // 设置为可见
         this.winCard.visible = true;
+        this.startWinGoldenAura();
     }
 
     // 隐藏获胜提示文本
@@ -424,6 +1053,8 @@ export class ScoreManager {
         // 设置为隐藏
         this.winCard.visible = false;
         this.winCard.mouseEnabled = false;
+        this.drawNextLevelButton("normal");
+        this.stopWinGoldenAura();
     }
 
     // 重置分数管理器状态

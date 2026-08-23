@@ -431,6 +431,17 @@ export default class BallController extends Laya.Script {
     private visualPhase: number = 0;
     private groundVisual: any = null;
     private groundEnergy: any = null;
+    private shakeTarget: any = null;
+    private shakeBaseX: number = 0;
+    private shakeBaseY: number = 0;
+    private shakeStartedAt: number = 0;
+    private deathFlash: any = null;
+    private deathFlashStartedAt: number = 0;
+    private deathParticleLayer: any = null;
+    private deathParticleStartedAt: number = 0;
+    private deathParticleOriginX: number = 0;
+    private deathParticleOriginY: number = 0;
+    private deathParticles: Array<{ node: any; vx: number; vy: number; spin: number }> = [];
 
     public setLevelTransitionHandler(handler: ((level: number, resume: () => void) => void) | null): void {
         this.levelTransitionHandler = handler;
@@ -654,6 +665,8 @@ export default class BallController extends Laya.Script {
 
         this.isHandlingDeath = true;
         SfxManager.playDeath();
+        this.startDeathFeedback();
+        this.triggerDeathHaptics();
 
         try {
             this.randomizePlatforms();
@@ -661,6 +674,234 @@ export default class BallController extends Laya.Script {
             this.respawn();
         } finally {
             this.isHandlingDeath = false;
+        }
+    }
+
+    private startDeathFeedback(): void {
+        this.clearDeathFeedback();
+        const deathPoint = this.getVisualStagePoint(this.owner as any, 0, 0);
+        this.startScreenShake();
+        this.showDeathFlash();
+        this.spawnDeathParticles(deathPoint.x, deathPoint.y);
+    }
+
+    private startScreenShake(): void {
+        this.stopScreenShake();
+        const target = (this.owner as any)?.parent;
+        if (!target || target === Laya.stage) return;
+
+        this.shakeTarget = target;
+        this.shakeBaseX = Number(target.x) || 0;
+        this.shakeBaseY = Number(target.y) || 0;
+        this.shakeStartedAt = this.getWpBNow();
+    }
+
+    private updateScreenShake(now: number): void {
+        const target = this.shakeTarget;
+        if (!target) return;
+
+        const elapsed = Math.max(0, now - this.shakeStartedAt);
+        if (elapsed >= 125) {
+            this.stopScreenShake();
+            return;
+        }
+
+        const frame = Math.floor(elapsed / 16);
+        const strength = 3.2 * (1 - elapsed / 125);
+        target.x = this.shakeBaseX + Math.sin((frame + 1) * 2.17) * strength;
+        target.y = this.shakeBaseY + Math.cos((frame + 1) * 2.83) * strength * 0.7;
+    }
+
+    private stopScreenShake(): void {
+        const target = this.shakeTarget;
+        if (target) {
+            try {
+                target.x = this.shakeBaseX;
+                target.y = this.shakeBaseY;
+            } catch (_) {
+                // A destroyed scene cannot be restored, but must not retain local state.
+            }
+        }
+        this.shakeTarget = null;
+        this.shakeStartedAt = 0;
+    }
+
+    private showDeathFlash(): void {
+        this.removeDeathFlash();
+        if (!Laya.stage) return;
+
+        const flash = new Laya.Sprite();
+        flash.name = "WPB_DeathFlash";
+        flash.zOrder = 9990;
+        flash.mouseEnabled = false;
+        flash.mouseThrough = true;
+        flash.width = Math.max(1, Laya.stage.width || 1);
+        flash.height = Math.max(1, Laya.stage.height || 1);
+        flash.alpha = 0.34;
+        if (typeof flash.graphics?.drawRect === "function") {
+            flash.graphics.drawRect(0, 0, flash.width, flash.height, "#FF1744");
+        }
+        Laya.stage.addChild(flash);
+        this.deathFlash = flash;
+        this.deathFlashStartedAt = this.getWpBNow();
+    }
+
+    private updateDeathFlash(now: number): void {
+        if (!this.deathFlash) return;
+
+        const elapsed = Math.max(0, now - this.deathFlashStartedAt);
+        if (elapsed >= 110) {
+            this.removeDeathFlash();
+            return;
+        }
+        this.deathFlash.alpha = 0.34 * (1 - elapsed / 110);
+    }
+
+    private removeDeathFlash(): void {
+        if (this.deathFlash) {
+            this.destroyVisualNode(this.deathFlash);
+        }
+        this.deathFlash = null;
+        this.deathFlashStartedAt = 0;
+    }
+
+    private spawnDeathParticles(stageX: number, stageY: number): void {
+        this.removeDeathParticles();
+        if (!Laya.stage) return;
+
+        const layer = new Laya.Sprite();
+        layer.name = "WPB_DeathParticles";
+        layer.zOrder = 9991;
+        layer.mouseEnabled = false;
+        layer.mouseThrough = true;
+        Laya.stage.addChild(layer);
+
+        this.deathParticleLayer = layer;
+        this.deathParticleStartedAt = this.getWpBNow();
+        this.deathParticleOriginX = stageX;
+        this.deathParticleOriginY = stageY;
+        this.deathParticles = [];
+
+        const particleCount = 14;
+        const colors = ["#42F5FF", "#9B6CFF", "#FF3B7C", "#D65CFF"];
+        for (let i = 0; i < particleCount; i++) {
+            const particle = new Laya.Sprite();
+            particle.name = "WPB_DeathFragment_" + i;
+            particle.mouseEnabled = false;
+            const size = 2 + (i % 3);
+            const color = colors[i % colors.length];
+            if (typeof particle.graphics?.drawPoly === "function") {
+                particle.graphics.drawPoly(-size, -size, [0, 0, size * 2, size * 0.4, size * 1.4, size * 2, size * 0.2, size * 1.5], color);
+            } else if (typeof particle.graphics?.drawRect === "function") {
+                particle.graphics.drawRect(-size * 0.5, -size * 0.5, size, size, color);
+            }
+            particle.x = stageX;
+            particle.y = stageY;
+            layer.addChild(particle);
+
+            const angle = i * Math.PI * 2 / particleCount + (i % 3) * 0.19;
+            const speed = 72 + (i % 5) * 18;
+            this.deathParticles.push({
+                node: particle,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed - 28,
+                spin: i % 2 === 0 ? 210 + i * 9 : -210 - i * 7,
+            });
+        }
+    }
+
+    private updateDeathParticles(now: number): void {
+        if (!this.deathParticleLayer) return;
+
+        const elapsedMs = Math.max(0, now - this.deathParticleStartedAt);
+        if (elapsedMs >= 420) {
+            this.removeDeathParticles();
+            return;
+        }
+
+        const elapsed = elapsedMs / 1000;
+        const life = 1 - elapsedMs / 420;
+        for (const particle of this.deathParticles) {
+            particle.node.x = this.deathParticleOriginX + particle.vx * elapsed;
+            particle.node.y = this.deathParticleOriginY + particle.vy * elapsed + 120 * elapsed * elapsed;
+            particle.node.rotation = particle.spin * elapsed;
+            particle.node.alpha = life;
+        }
+    }
+
+    private removeDeathParticles(): void {
+        if (this.deathParticleLayer) {
+            this.destroyVisualNode(this.deathParticleLayer);
+        }
+        this.deathParticleLayer = null;
+        this.deathParticleStartedAt = 0;
+        this.deathParticles = [];
+    }
+
+    private triggerDeathHaptics(): void {
+        try {
+            const browserGlobal: any = typeof globalThis !== "undefined" ? globalThis : null;
+            const navigatorObject = browserGlobal?.navigator;
+            if (typeof navigatorObject?.vibrate === "function") {
+                navigatorObject.vibrate(40);
+            }
+        } catch (_) {
+            // Haptics are best-effort and never participate in death semantics.
+        }
+    }
+
+    private updateDeathFeedback(): void {
+        const now = this.getWpBNow();
+        this.updateScreenShake(now);
+        this.updateDeathFlash(now);
+        this.updateDeathParticles(now);
+    }
+
+    private clearDeathFeedback(): void {
+        this.stopScreenShake();
+        this.removeDeathFlash();
+        this.removeDeathParticles();
+    }
+
+    private getWpBNow(): number {
+        const timerValue = Number(Laya.timer?.currTimer);
+        return Number.isFinite(timerValue) ? timerValue : Date.now();
+    }
+
+    private getVisualStagePoint(node: any, localX: number, localY: number): { x: number; y: number } {
+        if (node && typeof node.localToGlobal === "function" && Laya.Point) {
+            try {
+                const converted = node.localToGlobal(new Laya.Point(localX, localY), true);
+                if (converted && Number.isFinite(converted.x) && Number.isFinite(converted.y)) {
+                    return { x: converted.x, y: converted.y };
+                }
+            } catch (_) {
+                // Fall back to the unscaled parent chain below.
+            }
+        }
+
+        let x = localX;
+        let y = localY;
+        let current = node;
+        while (current && current !== Laya.stage) {
+            x += Number(current.x) || 0;
+            y += Number(current.y) || 0;
+            current = current.parent;
+        }
+        return { x, y };
+    }
+
+    private destroyVisualNode(node: any): void {
+        if (!node) return;
+        try {
+            if (typeof node.removeSelf === "function") node.removeSelf();
+        } catch (_) {
+            // Ignore removal races during scene teardown.
+        }
+        try {
+            if (typeof node.destroy === "function") node.destroy(true);
+        } catch (_) {
+            // Ignore destruction races during scene teardown.
         }
     }
 
@@ -716,6 +957,7 @@ export default class BallController extends Laya.Script {
     // 胜利后按 R 重开本局，并切换到下一关的随机平台布局
     private restartGame(): void {
         console.log("Restart game");
+        this.clearDeathFeedback();
 
         this.currentLevel++;
         if (this.currentLevel > this.maxLevel) {
@@ -1442,6 +1684,183 @@ export default class BallController extends Laya.Script {
                 }
             }
         }
+        this.ensurePlatformThrusters(platform);
+    }
+
+    private ensurePlatformThrusters(platform: any): void {
+        if (!platform || typeof platform.addChild !== "function") return;
+
+        this.ensurePlatformThruster(platform, "WPB_LeftThruster", true);
+        this.ensurePlatformThruster(platform, "WPB_RightThruster", false);
+    }
+
+    private ensurePlatformThruster(platform: any, name: string, isLeft: boolean): any {
+        let thruster = typeof platform.getChildByName === "function"
+            ? platform.getChildByName(name)
+            : null;
+        if (!thruster) {
+            const children: any[] = platform?._children ?? platform?._childs ?? [];
+            thruster = children.find((child: any) => child?.name === name) ?? null;
+        }
+        if (!thruster) {
+            thruster = new Laya.Sprite();
+            thruster.name = name;
+            thruster.mouseEnabled = false;
+            platform.addChild(thruster);
+        }
+
+        const width = Math.max(1, platform.width || 1);
+        thruster.width = 30;
+        thruster.height = 46;
+        thruster.x = isLeft ? 4 : Math.max(4, width - 34);
+        thruster.y = Math.max(6, (platform.height || 10) * 0.55);
+        thruster.zOrder = 2;
+        thruster.alpha = 0.88;
+        thruster.graphics.clear();
+
+        if (typeof thruster.graphics?.drawPoly === "function") {
+            thruster.graphics.drawPoly(
+                2,
+                1,
+                [3, 0, 23, 0, 27, 5, 23, 13, 7, 13, 0, 5],
+                "#10283D",
+                "#7DF9FF",
+                1.5
+            );
+            thruster.graphics.drawPoly(
+                5,
+                9,
+                [3, 0, 17, 0, 21, 7, 0, 7],
+                "#263454",
+                "#BBA2FF",
+                1
+            );
+        }
+        if (typeof thruster.graphics?.drawRect === "function") {
+            thruster.graphics.drawRect(8, 0, 14, 4, "#274D62", "#C5FCFF", 1);
+            thruster.graphics.drawRect(10, 12, 10, 4, "#071926", "#42F5FF", 1);
+        }
+        if (typeof thruster.graphics?.drawLine === "function") {
+            thruster.graphics.drawLine(6, 5, 24, 5, "#466D88", 1);
+            thruster.graphics.drawLine(9, 8, 21, 8, "#8B6CFF", 1);
+        }
+
+        let glow = typeof thruster.getChildByName === "function"
+            ? thruster.getChildByName("WPB_NozzleGlow")
+            : null;
+        let plume = typeof thruster.getChildByName === "function"
+            ? thruster.getChildByName("WPB_ThrusterPlume")
+            : null;
+        if (!glow) {
+            glow = new Laya.Sprite();
+            glow.name = "WPB_NozzleGlow";
+            glow.mouseEnabled = false;
+            thruster.addChild(glow);
+        }
+        if (!plume) {
+            plume = new Laya.Sprite();
+            plume.name = "WPB_ThrusterPlume";
+            plume.mouseEnabled = false;
+            thruster.addChild(plume);
+        }
+
+        glow.x = 15;
+        glow.y = 16;
+        glow.zOrder = 2;
+        glow.graphics.clear();
+        if (typeof glow.graphics?.drawCircle === "function") {
+            glow.graphics.drawCircle(0, 0, 4.2, "#DFFFFF", "#42F5FF", 1);
+            glow.graphics.drawCircle(0, 0, 2.1, "#FFFFFF");
+        }
+
+        plume.x = 0;
+        plume.y = 16;
+        plume.width = 30;
+        plume.height = 30;
+        plume.zOrder = 1;
+        return thruster;
+    }
+
+    private updatePlatformThrusters(platform: any, platformIndex: number): void {
+        const left = typeof platform.getChildByName === "function"
+            ? platform.getChildByName("WPB_LeftThruster")
+            : null;
+        const right = typeof platform.getChildByName === "function"
+            ? platform.getChildByName("WPB_RightThruster")
+            : null;
+        if (!left || !right) return;
+
+        const width = Math.max(1, platform.width || 1);
+        const baseY = Math.max(6, (platform.height || 10) * 0.55);
+        const leftPulse = (Math.sin(this.visualPhase * 1.65 + platformIndex * 0.73) + 1) * 0.5;
+        const rightPulse = (Math.sin(this.visualPhase * 1.65 + platformIndex * 0.73 + 1.35) + 1) * 0.5;
+
+        left.x = 4;
+        right.x = Math.max(4, width - 34);
+        left.y = baseY;
+        right.y = baseY;
+        left.scaleX = 1;
+        left.scaleY = 1;
+        right.scaleX = 1;
+        right.scaleY = 1;
+        this.updateThrusterPlume(left, this.visualPhase + platformIndex * 0.47, 0, leftPulse);
+        this.updateThrusterPlume(right, this.visualPhase + platformIndex * 0.47 + 1.37, 1, rightPulse);
+
+        const ballPoint = this.getVisualStagePoint(this.owner as any, 0, 0);
+        const radius = this.getBallRadius();
+        left.alpha = this.isBallNearThruster(ballPoint, radius, left) ? 0.27 : 0.88;
+        right.alpha = this.isBallNearThruster(ballPoint, radius, right) ? 0.27 : 0.88;
+    }
+
+    private updateThrusterPlume(thruster: any, phase: number, sideIndex: number, pulse: number): void {
+        const glow = typeof thruster.getChildByName === "function"
+            ? thruster.getChildByName("WPB_NozzleGlow")
+            : null;
+        const plume = typeof thruster.getChildByName === "function"
+            ? thruster.getChildByName("WPB_ThrusterPlume")
+            : null;
+        if (!glow || !plume?.graphics) return;
+
+        glow.alpha = 0.72 + pulse * 0.28;
+        const glowScale = 0.88 + pulse * 0.2;
+        glow.scaleX = glowScale;
+        glow.scaleY = glowScale;
+        plume.alpha = 0.82 + pulse * 0.18;
+        plume.graphics.clear();
+
+        if (typeof plume.graphics.drawRect === "function") {
+            plume.graphics.drawRect(12, 1, 6, 4, "#EFFFFF");
+            plume.graphics.drawRect(11, 7, 8, 3, "#72F6FF");
+            plume.graphics.drawRect(12, 12, 6, 2, "#5AA8FF");
+        }
+
+        const particleCount = 18;
+        for (let i = 0; i < particleCount; i++) {
+            const progress = (phase * 0.18 + i / particleCount + sideIndex * 0.11) % 1;
+            const lane = ((i * 7 + sideIndex * 3) % 5) - 2;
+            const spread = 2 + progress * 6.5;
+            const x = 15 + lane * spread * 0.38 + Math.sin(phase * 1.8 + i * 1.7) * 0.9;
+            const y = 3 + progress * 26;
+            const radius = progress < 0.24 ? 1.8 : progress < 0.62 ? 1.35 : 0.95;
+            const color = progress < 0.2
+                ? (i % 3 === 0 ? "#FFFFFF" : "#BFFFFF")
+                : progress < 0.55
+                    ? (i % 2 === 0 ? "#42F5FF" : "#4CA8FF")
+                    : (i % 2 === 0 ? "#6F7CFF" : "#A45CFF");
+            if (typeof plume.graphics.drawCircle === "function") {
+                plume.graphics.drawCircle(x, y, radius, color);
+            } else if (typeof plume.graphics.drawRect === "function") {
+                plume.graphics.drawRect(x - radius, y - radius, radius * 2, radius * 2, color);
+            }
+        }
+    }
+
+    private isBallNearThruster(ballPoint: { x: number; y: number }, ballRadius: number, thruster: any): boolean {
+        const width = thruster.width || 30;
+        const height = thruster.height || 46;
+        const center = this.getVisualStagePoint(thruster, width * 0.5, height * 0.5);
+        return Math.abs(ballPoint.x - center.x) <= ballRadius + width * 0.6
+            && Math.abs(ballPoint.y - center.y) <= ballRadius + height * 0.75;
     }
 
     private syncGroundVisual(): void {
@@ -1588,16 +2007,20 @@ export default class BallController extends Laya.Script {
         this.visualPhase += 0.055;
         const pulse = (Math.sin(this.visualPhase) + 1) * 0.5;
 
+        let platformVisualIndex = 0;
         for (const platform of this.platforms) {
             if (typeof platform?.name !== "string" || platform.name.indexOf("Platform_") !== 0) continue;
             const holoSide = typeof platform.getChildByName === "function"
                 ? platform.getChildByName("WPA_HoloSide")
                 : null;
-            if (!holoSide) continue;
-            const disappear = this.disappearConfigs.get(platform);
-            holoSide.alpha = this.movingConfigs.has(platform) || disappear?.state === "counting"
-                ? 0.58 + pulse * 0.34
-                : 0.78;
+            if (holoSide) {
+                const disappear = this.disappearConfigs.get(platform);
+                holoSide.alpha = this.movingConfigs.has(platform) || disappear?.state === "counting"
+                    ? 0.58 + pulse * 0.34
+                    : 0.78;
+            }
+            this.updatePlatformThrusters(platform, platformVisualIndex);
+            platformVisualIndex++;
         }
 
         if (this.groundVisual) {
@@ -1615,9 +2038,11 @@ export default class BallController extends Laya.Script {
                 energy.alpha = 0.35 + pulse * 0.65;
             }
         }
+        this.updateDeathFeedback();
     }
 
     onDestroy(): void {
+        this.clearDeathFeedback();
         if (this.visualLoopStarted && typeof Laya.timer?.clear === "function") {
             Laya.timer.clear(this, this.updateVisualEffects);
         }
