@@ -2,6 +2,7 @@ declare var Laya: any;
 import { SfxManager } from "./SfxManager";
 
 type WinAuraPoint = { x: number; y: number };
+type PlatformEnergyState = "FULL_ENERGY" | "ABSORBING" | "DEPLETED";
 
 type WinGlyphLayout = {
     character: string;
@@ -109,7 +110,11 @@ export class ScoreManager {
     private readonly winScore: number = 5;
     // 已经得分过的平台集合（防止重复计分）
     private scoredPlatforms: Set<string> = new Set<string>();
-    private readonly scoreFeedbackDurationMs: number = 260;
+    // WP-E1 平台能量只允许在单次计分周期内单向流转。
+    private platformEnergyStates: Map<any, PlatformEnergyState> = new Map<any, PlatformEnergyState>();
+    private platformEnergyVisuals: Map<any, any> = new Map<any, any>();
+    private activeEnergyAbsorptions: Map<any, () => void> = new Map<any, () => void>();
+    private readonly energyAbsorptionDurationMs: number = 500;
 
     // 初始化分数管理器，重置分数状态并创建界面文本
     public init(): void {
@@ -119,6 +124,7 @@ export class ScoreManager {
         this.hasWon = false;
         // 清空已得分平台记录
         this.scoredPlatforms.clear();
+        this.resetPlatformEnergyCycle();
 
         // 创建分数显示文本（如果还未创建）
         if (!this.scoreText) {
@@ -874,63 +880,117 @@ export class ScoreManager {
 
     private playScoreFeedback(platform: any): void {
         SfxManager.playScore();
-        this.playPlatformScoreFeedback(platform);
+        this.beginPlatformEnergyAbsorption(platform);
     }
 
-    private playPlatformScoreFeedback(platform: any): void {
-        let feedbackRoot: any = null;
+    private beginPlatformEnergyAbsorption(platform: any): void {
+        const currentState = this.getOrInitializePlatformEnergyState(platform);
+        if (currentState !== "FULL_ENERGY") return;
+
+        this.platformEnergyStates.set(platform, "ABSORBING");
+        this.playPlatformEnergyAbsorption(platform);
+    }
+
+    private getOrInitializePlatformEnergyState(platform: any): PlatformEnergyState {
+        const currentState = this.platformEnergyStates.get(platform);
+        if (currentState) return currentState;
+
+        this.platformEnergyStates.set(platform, "FULL_ENERGY");
+        return "FULL_ENERGY";
+    }
+
+    private playPlatformEnergyAbsorption(platform: any): void {
+        let transferRoot: any = null;
+        let ballSyncGlow: any = null;
+        let energyVisual: any = null;
 
         try {
-            if (!platform || typeof platform.addChild !== "function") return;
+            if (!platform || typeof platform.addChild !== "function") {
+                if (this.platformEnergyStates.get(platform) === "ABSORBING") {
+                    this.platformEnergyStates.set(platform, "DEPLETED");
+                }
+                return;
+            }
 
             const platformWidth = Math.max(1, Number(platform.width) || 1);
             const platformHeight = Math.max(1, Number(platform.height) || 1);
+            const visualHeight = Math.max(7, platformHeight);
+            const ball = this.findBallForPlatform(platform);
 
-            feedbackRoot = new Laya.Sprite();
-            feedbackRoot.name = "WPC_ScoreFeedback";
-            feedbackRoot.width = platformWidth;
-            feedbackRoot.height = platformHeight;
-            feedbackRoot.zOrder = 1000;
-            feedbackRoot.mouseEnabled = false;
-            platform.addChild(feedbackRoot);
+            energyVisual = this.platformEnergyVisuals.get(platform);
+            if (!energyVisual || energyVisual.destroyed) {
+                energyVisual = new Laya.Sprite();
+                energyVisual.name = "WPE1_PlatformEnergy";
+                energyVisual.width = platformWidth;
+                energyVisual.height = visualHeight;
+                energyVisual.y = -Math.max(3, visualHeight - platformHeight);
+                energyVisual.zOrder = 950;
+                energyVisual.mouseEnabled = false;
+                energyVisual.mouseThrough = true;
+                platform.addChild(energyVisual);
+                this.platformEnergyVisuals.set(platform, energyVisual);
+            }
+            this.drawPlatformEnergyGradient(energyVisual, platformWidth, visualHeight, 0);
+
+            transferRoot = new Laya.Sprite();
+            transferRoot.name = "WPE1_EnergyTransfer";
+            transferRoot.width = platformWidth;
+            transferRoot.height = platformHeight;
+            transferRoot.zOrder = 1000;
+            transferRoot.mouseEnabled = false;
+            transferRoot.mouseThrough = true;
+            platform.addChild(transferRoot);
 
             const flash = new Laya.Sprite();
             flash.mouseEnabled = false;
+            flash.mouseThrough = true;
             flash.graphics.drawRect(
                 -3,
-                -3,
+                energyVisual.y - 2,
                 platformWidth + 6,
-                platformHeight + 6,
+                visualHeight + 4,
                 "#DFFFFF",
                 "#35E9FF",
                 2
             );
-            flash.graphics.drawLine(0, 1, platformWidth, 1, "#FFFFFF", 2);
-            feedbackRoot.addChild(flash);
+            flash.graphics.drawLine(0, energyVisual.y, platformWidth, energyVisual.y, "#FFFFFF", 2);
+            transferRoot.addChild(flash);
 
-            const particlePalette = ["#FFFFFF", "#35E9FF", "#8B5CFF"];
+            const particlePalette = ["#FFFFFF", "#35E9FF", "#8B5CFF", "#DFFFFF"];
             const particles: Array<{
                 node: any;
                 startX: number;
                 startY: number;
                 driftX: number;
-                rise: number;
             }> = [];
 
-            for (let index = 0; index < 6; index++) {
+            for (let index = 0; index < 8; index++) {
                 const particle = new Laya.Sprite();
-                const radius = index % 3 === 0 ? 2.2 : 1.5;
+                const radius = index % 3 === 0 ? 2.4 : 1.6;
                 particle.mouseEnabled = false;
+                particle.mouseThrough = true;
                 particle.graphics.drawCircle(0, 0, radius, particlePalette[index % particlePalette.length]);
-                feedbackRoot.addChild(particle);
+                transferRoot.addChild(particle);
 
                 particles.push({
                     node: particle,
-                    startX: platformWidth * (index + 1) / 7,
-                    startY: index % 2 === 0 ? 1 : platformHeight * 0.35,
-                    driftX: (index - 2.5) * 3.2,
-                    rise: 16 + index % 3 * 5,
+                    startX: platformWidth * (index + 1) / 9,
+                    startY: energyVisual.y + visualHeight * (0.35 + (index % 2) * 0.28),
+                    driftX: (index - 3.5) * 2.8,
                 });
+            }
+
+            if (ball && typeof ball.addChild === "function") {
+                const ballRadius = Math.max(5, Math.max(Number(ball.width) || 10, Number(ball.height) || 10) * 0.5);
+                ballSyncGlow = new Laya.Sprite();
+                ballSyncGlow.name = "WPE1_BallSync";
+                ballSyncGlow.zOrder = 1002;
+                ballSyncGlow.mouseEnabled = false;
+                ballSyncGlow.mouseThrough = true;
+                ballSyncGlow.graphics.drawCircle(0, 0, ballRadius + 4, "#35E9FF", "#FFFFFF", 1.4);
+                ballSyncGlow.graphics.drawCircle(0, 0, ballRadius + 1.5, "#8B5CFF");
+                ballSyncGlow.alpha = 0;
+                ball.addChild(ballSyncGlow);
             }
 
             const readNow = (): number => {
@@ -940,62 +1000,180 @@ export class ScoreManager {
             const startedAt = readNow();
             let finished = false;
 
-            const updateScoreFeedback = (): void => {
+            const updateEnergyAbsorption = (): void => {
                 if (finished) return;
-                if (feedbackRoot?.destroyed) {
-                    finishScoreFeedback();
+                if (transferRoot?.destroyed || energyVisual?.destroyed) {
+                    finishEnergyAbsorption(true);
                     return;
                 }
 
                 const elapsed = Math.max(0, readNow() - startedAt);
-                const progress = Math.min(1, elapsed / this.scoreFeedbackDurationMs);
+                const progress = Math.min(1, elapsed / this.energyAbsorptionDurationMs);
                 const eased = 1 - Math.pow(1 - progress, 2);
+                const target = this.getBallTargetInPlatformSpace(platform, ball, platformWidth);
 
+                this.drawPlatformEnergyGradient(energyVisual, platformWidth, visualHeight, progress);
                 flash.alpha = 0.72 * Math.pow(1 - progress, 2);
-                for (const particle of particles) {
-                    particle.node.x = particle.startX + particle.driftX * eased;
-                    particle.node.y = particle.startY - particle.rise * eased;
+                for (let index = 0; index < particles.length; index++) {
+                    const particle = particles[index];
+                    const arc = Math.sin(Math.PI * eased) * (12 + index % 3 * 5);
+                    particle.node.x = particle.startX
+                        + (target.x - particle.startX) * eased
+                        + particle.driftX * Math.sin(Math.PI * progress);
+                    particle.node.y = particle.startY + (target.y - particle.startY) * eased - arc;
                     particle.node.alpha = progress < 0.12
                         ? progress / 0.12
-                        : Math.pow(1 - progress, 1.35);
-                    const scale = 0.8 + progress * 0.45;
+                        : progress > 0.82
+                            ? Math.max(0, (1 - progress) / 0.18)
+                            : 1;
+                    const scale = 0.75 + Math.sin(Math.PI * progress) * 0.55;
                     particle.node.scaleX = scale;
                     particle.node.scaleY = scale;
                 }
 
-                if (progress >= 1) finishScoreFeedback();
+                if (ballSyncGlow) {
+                    const pulse = Math.sin(Math.PI * progress);
+                    ballSyncGlow.alpha = pulse * 0.72;
+                    const glowScale = 0.78 + eased * 0.72;
+                    ballSyncGlow.scaleX = glowScale;
+                    ballSyncGlow.scaleY = glowScale;
+                }
+
+                if (progress >= 1) finishEnergyAbsorption(true);
             };
 
-            const finishScoreFeedback = (): void => {
+            const finishEnergyAbsorption = (complete: boolean): void => {
                 if (finished) return;
                 finished = true;
                 if (typeof Laya.timer?.clear === "function") {
-                    Laya.timer.clear(feedbackRoot, updateScoreFeedback);
-                    Laya.timer.clear(feedbackRoot, finishScoreFeedback);
+                    Laya.timer.clear(transferRoot, updateEnergyAbsorption);
+                    Laya.timer.clear(transferRoot, completeEnergyAbsorption);
                 }
-                try {
-                    if (typeof feedbackRoot?.removeSelf === "function") feedbackRoot.removeSelf();
-                    if (typeof feedbackRoot?.destroy === "function") feedbackRoot.destroy(true);
-                } catch (_) {
-                    // Scene teardown may already have removed the temporary feedback node.
+
+                this.activeEnergyAbsorptions.delete(platform);
+                this.destroyPlatformEnergyNode(transferRoot);
+                this.destroyPlatformEnergyNode(ballSyncGlow);
+
+                if (complete && this.platformEnergyStates.get(platform) === "ABSORBING") {
+                    this.platformEnergyStates.set(platform, "DEPLETED");
+                    if (energyVisual && !energyVisual.destroyed) {
+                        this.drawPlatformEnergyGradient(energyVisual, platformWidth, visualHeight, 1);
+                    }
                 }
             };
 
-            updateScoreFeedback();
+            const completeEnergyAbsorption = (): void => finishEnergyAbsorption(true);
+            const cancelEnergyAbsorption = (): void => finishEnergyAbsorption(false);
+            this.activeEnergyAbsorptions.set(platform, cancelEnergyAbsorption);
+
+            updateEnergyAbsorption();
             if (typeof Laya.timer?.frameLoop === "function") {
-                Laya.timer.frameLoop(1, feedbackRoot, updateScoreFeedback);
+                Laya.timer.frameLoop(1, transferRoot, updateEnergyAbsorption);
             } else if (typeof Laya.timer?.once === "function") {
-                Laya.timer.once(this.scoreFeedbackDurationMs, feedbackRoot, finishScoreFeedback);
+                Laya.timer.once(this.energyAbsorptionDurationMs, transferRoot, completeEnergyAbsorption);
             } else {
-                finishScoreFeedback();
+                finishEnergyAbsorption(true);
             }
         } catch (_) {
-            try {
-                if (typeof feedbackRoot?.removeSelf === "function") feedbackRoot.removeSelf();
-                if (typeof feedbackRoot?.destroy === "function") feedbackRoot.destroy(true);
-            } catch (_) {
-                // Visual feedback is best-effort and must never affect scoring.
+            this.activeEnergyAbsorptions.delete(platform);
+            this.destroyPlatformEnergyNode(transferRoot);
+            this.destroyPlatformEnergyNode(ballSyncGlow);
+            if (this.platformEnergyStates.get(platform) === "ABSORBING") {
+                this.platformEnergyStates.set(platform, "DEPLETED");
+                if (energyVisual && !energyVisual.destroyed) {
+                    const width = Math.max(1, Number(platform?.width) || 1);
+                    const height = Math.max(7, Number(platform?.height) || 1);
+                    this.drawPlatformEnergyGradient(energyVisual, width, height, 1);
+                }
             }
+        }
+    }
+
+    private findBallForPlatform(platform: any): any {
+        const parent = platform?.parent;
+        if (!parent) return null;
+
+        if (typeof parent.getChildByName === "function") {
+            const ball = parent.getChildByName("Ball");
+            if (ball) return ball;
+        }
+
+        const children: any[] = parent?._children ?? parent?._childs ?? [];
+        return children.find((child: any) => child?.name === "Ball") ?? null;
+    }
+
+    private getBallTargetInPlatformSpace(platform: any, ball: any, platformWidth: number): { x: number; y: number } {
+        if (ball && ball.parent === platform?.parent) {
+            return {
+                x: (Number(ball.x) || 0) - (Number(platform.x) || 0),
+                y: (Number(ball.y) || 0) - (Number(platform.y) || 0),
+            };
+        }
+
+        return { x: platformWidth * 0.5, y: -26 };
+    }
+
+    private drawPlatformEnergyGradient(
+        energyVisual: any,
+        width: number,
+        height: number,
+        progress: number
+    ): void {
+        if (!energyVisual?.graphics) return;
+
+        const normalized = Math.max(0, Math.min(1, progress));
+        const segmentCount = 12;
+        const segmentWidth = width / segmentCount;
+        energyVisual.graphics.clear();
+
+        for (let index = 0; index < segmentCount; index++) {
+            const position = index / Math.max(1, segmentCount - 1);
+            const colorProgress = Math.max(0, Math.min(1, normalized + (1 - position) * 0.16));
+            const color = this.mixEnergyColor([53, 233, 255], [25, 29, 48], colorProgress);
+            energyVisual.graphics.drawRect(
+                index * segmentWidth,
+                0,
+                segmentWidth + 0.75,
+                height,
+                color
+            );
+        }
+
+        const borderColor = this.mixEnergyColor([220, 255, 255], [67, 62, 91], normalized);
+        energyVisual.graphics.drawLine(0, 0, width, 0, borderColor, 1.2);
+        energyVisual.graphics.drawLine(0, height, width, height, borderColor, 1);
+        energyVisual.alpha = 0.94;
+    }
+
+    private mixEnergyColor(from: [number, number, number], to: [number, number, number], progress: number): string {
+        const channel = (index: number): string => {
+            const value = Math.round(from[index] + (to[index] - from[index]) * progress);
+            const hex = Math.max(0, Math.min(255, value)).toString(16);
+            return hex.length < 2 ? "0" + hex : hex;
+        };
+        return "#" + channel(0) + channel(1) + channel(2);
+    }
+
+    private resetPlatformEnergyCycle(): void {
+        for (const cancel of Array.from(this.activeEnergyAbsorptions.values())) {
+            cancel();
+        }
+        this.activeEnergyAbsorptions.clear();
+
+        for (const visual of this.platformEnergyVisuals.values()) {
+            this.destroyPlatformEnergyNode(visual);
+        }
+        this.platformEnergyVisuals.clear();
+        this.platformEnergyStates.clear();
+    }
+
+    private destroyPlatformEnergyNode(node: any): void {
+        if (!node) return;
+        try {
+            if (typeof node.removeSelf === "function") node.removeSelf();
+            if (typeof node.destroy === "function") node.destroy(true);
+        } catch (_) {
+            // Scene teardown may already have removed temporary WP-E1 visuals.
         }
     }
 
@@ -1065,6 +1243,8 @@ export class ScoreManager {
         this.hasWon = false;
         // 清空已得分平台记录
         this.scoredPlatforms.clear();
+        // 死亡或正式换关会开启新的计分周期；周期内能量状态不会反向。
+        this.resetPlatformEnergyCycle();
 
         // 更新分数显示
         this.updateScoreText();
