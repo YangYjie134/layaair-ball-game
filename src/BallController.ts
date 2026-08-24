@@ -428,6 +428,13 @@ export default class BallController extends Laya.Script {
     private levelTransitionHandler: ((level: number, resume: () => void) => void) | null = null;
     private levelTransitionPending: boolean = false;
     private visualLoopStarted: boolean = false;
+    private static readonly DISAPPEAR_HIDDEN_COOLDOWN_MS: number = 2000;
+    private static readonly DISAPPEAR_REBUILDING_MS: number = 400;
+    private disappearRecoveryStates: Map<any, {
+        state: "ACTIVE" | "WARNING" | "HIDDEN_COOLDOWN" | "REBUILDING";
+        enteredAt: number;
+        visual: any;
+    }> = new Map();
     private visualPhase: number = 0;
     private groundVisual: any = null;
     private groundEnergy: any = null;
@@ -562,6 +569,178 @@ export default class BallController extends Laya.Script {
         }
     }
 
+    private readDisappearRecoveryTime(): number {
+        const timerValue = Number(Laya.timer?.currTimer);
+        return Number.isFinite(timerValue) ? timerValue : Date.now();
+    }
+
+    private getOrCreateDisappearRecoveryState(platform: any): {
+        state: "ACTIVE" | "WARNING" | "HIDDEN_COOLDOWN" | "REBUILDING";
+        enteredAt: number;
+        visual: any;
+    } {
+        let recovery = this.disappearRecoveryStates.get(platform);
+        if (!recovery) {
+            recovery = { state: "ACTIVE", enteredAt: this.readDisappearRecoveryTime(), visual: null };
+            this.disappearRecoveryStates.set(platform, recovery);
+        }
+        return recovery;
+    }
+
+    private hideDisappearRecoveryVisual(recovery: { visual: any }): void {
+        if (recovery.visual && !recovery.visual.destroyed) {
+            recovery.visual.visible = false;
+        }
+    }
+
+    private resetDisappearRecoveryState(platform: any): void {
+        const recovery = this.disappearRecoveryStates.get(platform);
+        if (recovery?.visual) {
+            this.destroyVisualNode(recovery.visual);
+        }
+        this.disappearRecoveryStates.set(platform, {
+            state: "ACTIVE",
+            enteredAt: this.readDisappearRecoveryTime(),
+            visual: null,
+        });
+    }
+
+    private clearDisappearRecoveryStates(): void {
+        for (const recovery of this.disappearRecoveryStates.values()) {
+            if (recovery.visual) {
+                this.destroyVisualNode(recovery.visual);
+            }
+        }
+        this.disappearRecoveryStates.clear();
+    }
+
+    private updateDisappearRecoveryLifecycle(platform: any, cfg: DisappearConfig): void {
+        const nowMs = this.readDisappearRecoveryTime();
+        const recovery = this.getOrCreateDisappearRecoveryState(platform);
+
+        if (cfg.state === "counting") {
+            if (recovery.state !== "WARNING") {
+                recovery.state = "WARNING";
+                recovery.enteredAt = cfg.triggerAt || nowMs;
+            }
+            this.hideDisappearRecoveryVisual(recovery);
+            return;
+        }
+
+        if (cfg.state === "hidden") {
+            // The physical carrier remains hidden and collision-gated throughout cooldown and rebuilding.
+            platform.visible = false;
+            if (recovery.state === "ACTIVE" || recovery.state === "WARNING") {
+                recovery.state = "HIDDEN_COOLDOWN";
+                recovery.enteredAt = nowMs;
+            }
+
+            if (recovery.state === "HIDDEN_COOLDOWN") {
+                this.hideDisappearRecoveryVisual(recovery);
+                const hiddenElapsed = Math.max(0, nowMs - recovery.enteredAt);
+                if (hiddenElapsed >= BallController.DISAPPEAR_HIDDEN_COOLDOWN_MS) {
+                    recovery.state = "REBUILDING";
+                    recovery.enteredAt += BallController.DISAPPEAR_HIDDEN_COOLDOWN_MS;
+                }
+            }
+
+            if (recovery.state === "REBUILDING") {
+                const rebuildElapsed = Math.max(0, nowMs - recovery.enteredAt);
+                if (rebuildElapsed >= BallController.DISAPPEAR_REBUILDING_MS) {
+                    cfg.state = "idle";
+                    cfg.triggerAt = 0;
+                    recovery.state = "ACTIVE";
+                    recovery.enteredAt = nowMs;
+                    this.hideDisappearRecoveryVisual(recovery);
+                    this.repaintPlatformColor(platform, "#00ff00");
+                    platform.visible = true;
+                    return;
+                }
+                this.drawDisappearRecoveryVisual(
+                    platform,
+                    recovery,
+                    rebuildElapsed / BallController.DISAPPEAR_REBUILDING_MS,
+                );
+            }
+            return;
+        }
+
+        if (recovery.state !== "ACTIVE") {
+            recovery.state = "ACTIVE";
+            recovery.enteredAt = nowMs;
+            this.hideDisappearRecoveryVisual(recovery);
+        }
+    }
+
+    private drawDisappearRecoveryVisual(
+        platform: any,
+        recovery: { visual: any },
+        rawProgress: number,
+    ): void {
+        const parent = platform?.parent;
+        if (!parent || typeof parent.addChild !== "function") return;
+
+        let visual = recovery.visual;
+        if (!visual || visual.destroyed || visual.parent !== parent) {
+            if (visual) this.destroyVisualNode(visual);
+            visual = new Laya.Sprite();
+            visual.name = "WPE2_DisappearRecovery";
+            visual.mouseEnabled = false;
+            visual.mouseThrough = true;
+            visual.blendMode = "lighter";
+            parent.addChild(visual);
+            recovery.visual = visual;
+        }
+
+        const progress = Math.max(0, Math.min(1, rawProgress));
+        const eased = 1 - Math.pow(1 - progress, 2);
+        const width = Math.max(1, Number(platform.width) || 1);
+        const depth = Math.max(8, Math.min(16, Number(platform.height) || 10));
+        const graphics = visual.graphics;
+        if (!graphics) return;
+
+        visual.x = Number(platform.x) || 0;
+        visual.y = (Number(platform.y) || 0) - 6;
+        visual.width = width;
+        visual.height = depth + 12;
+        visual.zOrder = (Number(platform.zOrder) || 0) + 3;
+        visual.alpha = 0.34 + 0.58 * eased;
+        visual.visible = true;
+        graphics.clear();
+
+        const top = 6;
+        const bottom = top + depth;
+        const scanY = top + depth * progress;
+        if (typeof graphics.drawLine === "function") {
+            graphics.drawLine(0, top, width, top, "#BFFFFF", 2);
+            graphics.drawLine(0, bottom, width, bottom, "#35E9FF", 1.5);
+            graphics.drawLine(0, top, 0, bottom, "#8B5CFF", 1.5);
+            graphics.drawLine(width, top, width, bottom, "#8B5CFF", 1.5);
+            for (let y = top + 3; y < bottom; y += 4) {
+                graphics.drawLine(2, y, width - 2, y, "#16758D", 1);
+            }
+        }
+        if (typeof graphics.drawRect === "function") {
+            graphics.drawRect(0, scanY - 1, width, 2, "#E8FFFF");
+            graphics.drawRect(width * 0.12, top + 2, width * 0.76 * eased, 1, "#35E9FF");
+        }
+
+        for (let index = 0; index < 12; index++) {
+            const targetX = width * (index + 0.5) / 12;
+            const startX = width * (((index * 37) % 23) + 0.5) / 23;
+            const targetY = index % 2 === 0 ? top : bottom;
+            const startY = index % 2 === 0 ? top - 20 - (index % 3) * 5 : bottom + 18 + (index % 3) * 5;
+            const particleX = startX + (targetX - startX) * eased;
+            const particleY = startY + (targetY - startY) * eased;
+            const color = index % 3 === 0 ? "#FFFFFF" : index % 2 === 0 ? "#35E9FF" : "#8B5CFF";
+            if (typeof graphics.drawCircle === "function") {
+                graphics.drawCircle(particleX, particleY, index % 4 === 0 ? 2 : 1.3, color);
+            } else if (typeof graphics.drawRect === "function") {
+                graphics.drawRect(particleX - 1, particleY - 1, 2, 2, color);
+            }
+        }
+    }
+
     private createDisappearHighlightBarIfNeeded(): void {
         if (this.disappearHighlightBar) return;
 
@@ -584,15 +763,17 @@ export default class BallController extends Laya.Script {
         this.createDisappearHighlightBarIfNeeded();
 
         const bar = this.disappearHighlightBar;
-        if (!bar) return;
-
         const entry = this.disappearConfigs.entries().next();
         if (entry.done) {
-            bar.visible = false;
+            if (bar) bar.visible = false;
             return;
         }
 
         const [target, cfg] = entry.value as [any, DisappearConfig];
+        if (target && cfg) {
+            this.updateDisappearRecoveryLifecycle(target, cfg);
+        }
+        if (!bar) return;
         if (!target || !cfg || cfg.state === 'hidden') {
             bar.visible = false;
             return;
@@ -958,11 +1139,13 @@ export default class BallController extends Laya.Script {
         ScoreManager.instance.reset();
 
         // 同关死亡重来:消失平台全部复原
+        this.clearDisappearRecoveryStates();
         for (const [p, cfg] of this.disappearConfigs) {
             cfg.state = 'idle';
             cfg.triggerAt = 0;
             p.visible = true;
             this.repaintPlatformColor(p, "#00cc00");
+            this.resetDisappearRecoveryState(p);
         }
     }
 
@@ -1575,6 +1758,7 @@ export default class BallController extends Laya.Script {
      * @param movingIndices - 本轮被分配为移动平台的平台索引集合（仅用于展示，消失平台可与其重合）
      */
     private setupDisappearPlatforms(sorted: any[], movingIndices: Set<number>): void {
+        this.clearDisappearRecoveryStates();
         this.disappearConfigs.clear();
         if (this.currentLevel !== 3 && this.currentLevel !== 4) return;
 
@@ -1583,6 +1767,7 @@ export default class BallController extends Laya.Script {
 
         const target = candidates[Math.floor(this.rng() * candidates.length)];
         this.disappearConfigs.set(target, { state: 'idle', triggerAt: 0 });
+        this.resetDisappearRecoveryState(target);
         this.repaintPlatformColor(target, "#00ff00");
     }
 
@@ -2327,6 +2512,7 @@ export default class BallController extends Laya.Script {
 
     onDestroy(): void {
         this.clearDeathFeedback();
+        this.clearDisappearRecoveryStates();
         if (this.visualLoopStarted && typeof Laya.timer?.clear === "function") {
             Laya.timer.clear(this, this.updateVisualEffects);
         }
