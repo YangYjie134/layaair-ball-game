@@ -428,6 +428,10 @@ export default class BallController extends Laya.Script {
     private levelTransitionHandler: ((level: number, resume: () => void) => void) | null = null;
     private levelTransitionPending: boolean = false;
     private visualLoopStarted: boolean = false;
+    private static readonly PLATFORM_LANDING_IMPACT_DURATION_MS: number = 120;
+    private static readonly PLATFORM_LANDING_IMPACT_MAX_Y: number = 3;
+    private platformLandingImpactStarts: Map<any, number> = new Map();
+    private platformLandingContact: any = null;
     private static readonly DISAPPEAR_HIDDEN_COOLDOWN_MS: number = 2000;
     private static readonly DISAPPEAR_REBUILDING_MS: number = 400;
     private disappearRecoveryStates: Map<any, {
@@ -1130,6 +1134,7 @@ export default class BallController extends Laya.Script {
         // 重置运动状态
         this.onGround = false;
         this.groundPlatform = null;
+        this.resetPlatformLandingImpacts();
         // 重置游戏状态
         this.platformsActive = false;
         this.deathEnabled = false;
@@ -1843,6 +1848,7 @@ export default class BallController extends Laya.Script {
             holoSide = new Laya.Sprite();
             holoSide.name = "WPA_HoloSide";
             holoSide.mouseEnabled = false;
+            holoSide.y = 0;
             platform.addChild(holoSide);
         }
 
@@ -1855,7 +1861,6 @@ export default class BallController extends Laya.Script {
         if (!graphics) return;
 
         holoSide.x = 0;
-        holoSide.y = 0;
         holoSide.width = width;
         holoSide.height = depth + 4;
         holoSide.zOrder = 1;
@@ -1906,6 +1911,7 @@ export default class BallController extends Laya.Script {
             thruster = new Laya.Sprite();
             thruster.name = name;
             thruster.mouseEnabled = false;
+            thruster.y = Math.max(6, (platform.height || 10) * 0.55);
             platform.addChild(thruster);
         }
 
@@ -1913,7 +1919,6 @@ export default class BallController extends Laya.Script {
         thruster.width = 30;
         thruster.height = 46;
         thruster.x = isLeft ? 4 : Math.max(4, width - 34);
-        thruster.y = Math.max(6, (platform.height || 10) * 0.55);
         thruster.zOrder = 2;
         thruster.alpha = 0.88;
         thruster.graphics.clear();
@@ -1981,7 +1986,7 @@ export default class BallController extends Laya.Script {
         return thruster;
     }
 
-    private updatePlatformThrusters(platform: any, platformIndex: number): void {
+    private updatePlatformThrusters(platform: any, platformIndex: number, impactOffsetY: number): void {
         const left = typeof platform.getChildByName === "function"
             ? platform.getChildByName("WPB_LeftThruster")
             : null;
@@ -1992,14 +1997,14 @@ export default class BallController extends Laya.Script {
 
         const width = Math.max(1, platform.width || 1);
         const baseY = Math.max(6, (platform.height || 10) * 0.55);
-        const hoverY = this.getPlatformVisualHover(platformIndex);
+        const visualOffsetY = this.getPlatformVisualHover(platformIndex) + impactOffsetY;
         const leftPulse = (Math.sin(this.visualPhase * 1.65 + platformIndex * 0.73) + 1) * 0.5;
         const rightPulse = (Math.sin(this.visualPhase * 1.65 + platformIndex * 0.73 + 1.35) + 1) * 0.5;
 
         left.x = 4;
         right.x = Math.max(4, width - 34);
-        left.y = baseY + hoverY;
-        right.y = baseY + hoverY;
+        left.y = baseY + visualOffsetY;
+        right.y = baseY + visualOffsetY;
         left.scaleX = 1;
         left.scaleY = 1;
         right.scaleX = 1;
@@ -2066,6 +2071,54 @@ export default class BallController extends Laya.Script {
 
     private getPlatformVisualHover(platformIndex: number): number {
         return Math.sin(this.visualPhase * 0.82 + platformIndex * 0.9) * 1.5;
+    }
+
+    private getPlatformLandingImpactNow(): number {
+        const timerValue = Number(Laya.timer?.currTimer);
+        return Number.isFinite(timerValue) ? timerValue : Date.now();
+    }
+
+    private updatePlatformLandingImpactTrigger(nowMs: number): void {
+        const platform = this.onGround ? this.groundPlatform : null;
+        const platformName = platform?.name;
+        const disappear = platform ? this.disappearConfigs.get(platform) : null;
+        const isValidPlatformLanding = typeof platformName === "string"
+            && platformName.indexOf("Platform_") === 0
+            && platform.visible !== false
+            && disappear?.state !== "hidden";
+
+        if (!isValidPlatformLanding) {
+            this.platformLandingContact = null;
+            return;
+        }
+
+        if (this.platformLandingContact !== platform) {
+            this.platformLandingImpactStarts.set(platform, nowMs);
+        }
+        this.platformLandingContact = platform;
+    }
+
+    private getPlatformLandingImpactOffset(platform: any, nowMs: number): number {
+        const startedAt = this.platformLandingImpactStarts.get(platform);
+        if (startedAt === undefined) return 0;
+
+        const duration = BallController.PLATFORM_LANDING_IMPACT_DURATION_MS;
+        const elapsed = Math.max(0, nowMs - startedAt);
+        if (elapsed >= duration) {
+            this.platformLandingImpactStarts.delete(platform);
+            return 0;
+        }
+
+        const halfDuration = duration * 0.5;
+        const normalized = elapsed <= halfDuration
+            ? elapsed / halfDuration
+            : (duration - elapsed) / halfDuration;
+        return BallController.PLATFORM_LANDING_IMPACT_MAX_Y * Math.max(0, Math.min(1, normalized));
+    }
+
+    private resetPlatformLandingImpacts(): void {
+        this.platformLandingImpactStarts.clear();
+        this.platformLandingContact = null;
     }
 
     private initializeBallVisual(): void {
@@ -2472,21 +2525,25 @@ export default class BallController extends Laya.Script {
     private updateVisualEffects(): void {
         this.visualPhase += 0.055;
         const pulse = (Math.sin(this.visualPhase) + 1) * 0.5;
+        const landingImpactNow = this.getPlatformLandingImpactNow();
+        this.updatePlatformLandingImpactTrigger(landingImpactNow);
 
         let platformVisualIndex = 0;
         for (const platform of this.platforms) {
             if (typeof platform?.name !== "string" || platform.name.indexOf("Platform_") !== 0) continue;
+            const hoverY = this.getPlatformVisualHover(platformVisualIndex);
+            const impactOffsetY = this.getPlatformLandingImpactOffset(platform, landingImpactNow);
             const holoSide = typeof platform.getChildByName === "function"
                 ? platform.getChildByName("WPA_HoloSide")
                 : null;
             if (holoSide) {
-                holoSide.y = this.getPlatformVisualHover(platformVisualIndex);
+                holoSide.y = hoverY + impactOffsetY;
                 const disappear = this.disappearConfigs.get(platform);
                 holoSide.alpha = this.movingConfigs.has(platform) || disappear?.state === "counting"
                     ? 0.58 + pulse * 0.34
                     : 0.78;
             }
-            this.updatePlatformThrusters(platform, platformVisualIndex);
+            this.updatePlatformThrusters(platform, platformVisualIndex, impactOffsetY);
             platformVisualIndex++;
         }
 
@@ -2513,6 +2570,7 @@ export default class BallController extends Laya.Script {
     onDestroy(): void {
         this.clearDeathFeedback();
         this.clearDisappearRecoveryStates();
+        this.resetPlatformLandingImpacts();
         if (this.visualLoopStarted && typeof Laya.timer?.clear === "function") {
             Laya.timer.clear(this, this.updateVisualEffects);
         }
