@@ -430,6 +430,95 @@ export default class BallController extends Laya.Script {
     private visualLoopStarted: boolean = false;
     private static readonly PLATFORM_LANDING_IMPACT_DURATION_MS: number = 120;
     private static readonly PLATFORM_LANDING_IMPACT_MAX_Y: number = 3;
+    private static readonly BALL_ENERGY_STAGE_COUNT: number = 5;
+    private static readonly BALL_ENERGY_ABSORPTION_DURATION_MS: number = 500;
+    private static readonly BALL_ENERGY_CHECKPOINT_PALETTES = [
+        {
+            auraOuter: [22, 77, 104],
+            auraInner: [37, 139, 192],
+            shellOuter: [7, 24, 36],
+            shellOuterStroke: [116, 250, 255],
+            shellPanel: [11, 38, 55],
+            shellPanelStroke: [53, 233, 255],
+            coreOuter: [25, 220, 232],
+            coreOuterStroke: [216, 255, 255],
+            coreInner: [244, 255, 255],
+            circuitPrimary: [169, 108, 255],
+            circuitSecondary: [83, 248, 255],
+            circuitNode: [247, 181, 255],
+            trailOuter: [20, 82, 112],
+            trailStroke: [66, 245, 255],
+            trailInner: [69, 241, 255],
+        },
+        {
+            auraOuter: [24, 47, 106],
+            auraInner: [82, 62, 215],
+            shellOuter: [8, 20, 46],
+            shellOuterStroke: [158, 132, 255],
+            shellPanel: [16, 28, 73],
+            shellPanelStroke: [124, 105, 255],
+            coreOuter: [112, 82, 255],
+            coreOuterStroke: [228, 244, 255],
+            coreInner: [255, 255, 255],
+            circuitPrimary: [194, 123, 255],
+            circuitSecondary: [98, 183, 255],
+            circuitNode: [244, 197, 255],
+            trailOuter: [23, 54, 109],
+            trailStroke: [132, 120, 255],
+            trailInner: [158, 150, 255],
+        },
+        {
+            auraOuter: [55, 22, 108],
+            auraInner: [135, 45, 225],
+            shellOuter: [24, 10, 52],
+            shellOuterStroke: [215, 150, 255],
+            shellPanel: [38, 16, 75],
+            shellPanelStroke: [175, 80, 255],
+            coreOuter: [175, 60, 255],
+            coreOuterStroke: [248, 215, 255],
+            coreInner: [255, 255, 255],
+            circuitPrimary: [255, 105, 215],
+            circuitSecondary: [180, 120, 255],
+            circuitNode: [255, 205, 245],
+            trailOuter: [70, 30, 112],
+            trailStroke: [185, 95, 255],
+            trailInner: [220, 140, 255],
+        },
+        {
+            auraOuter: [95, 22, 75],
+            auraInner: [215, 55, 145],
+            shellOuter: [46, 12, 38],
+            shellOuterStroke: [255, 150, 205],
+            shellPanel: [70, 18, 55],
+            shellPanelStroke: [255, 90, 165],
+            coreOuter: [250, 55, 150],
+            coreOuterStroke: [255, 220, 240],
+            coreInner: [255, 255, 255],
+            circuitPrimary: [255, 185, 80],
+            circuitSecondary: [255, 100, 175],
+            circuitNode: [255, 235, 175],
+            trailOuter: [98, 28, 68],
+            trailStroke: [250, 75, 150],
+            trailInner: [255, 135, 185],
+        },
+        {
+            auraOuter: [125, 28, 75],
+            auraInner: [255, 185, 45],
+            shellOuter: [38, 14, 32],
+            shellOuterStroke: [255, 220, 115],
+            shellPanel: [62, 20, 48],
+            shellPanelStroke: [255, 190, 65],
+            coreOuter: [255, 210, 50],
+            coreOuterStroke: [255, 250, 200],
+            coreInner: [255, 255, 255],
+            circuitPrimary: [255, 245, 160],
+            circuitSecondary: [255, 155, 45],
+            circuitNode: [255, 255, 255],
+            trailOuter: [115, 32, 70],
+            trailStroke: [255, 165, 60],
+            trailInner: [255, 225, 110],
+        },
+    ];
     private platformLandingImpactStarts: Map<any, number> = new Map();
     private platformLandingContact: any = null;
     private static readonly DISAPPEAR_HIDDEN_COOLDOWN_MS: number = 2000;
@@ -444,12 +533,24 @@ export default class BallController extends Laya.Script {
     private groundEnergy: any = null;
     private ballVisualRoot: any = null;
     private ballAura: any = null;
+    private ballShell: any = null;
     private ballCore: any = null;
+    private ballCircuits: any = null;
     private ballVisualScaleX: number = 1;
     private ballVisualScaleY: number = 1;
     private ballVisualStateReady: boolean = false;
     private ballWasGrounded: boolean = false;
     private ballLastVy: number = 0;
+    private ballEnergyObservedLevel: number = 1;
+    private ballEnergyObservedScore: number = 0;
+    private ballEnergyTransitionFrom: number = 0;
+    private ballEnergyTransitionTo: number = 0;
+    private ballEnergyTransitionStartedAt: number = 0;
+    private ballEnergyTransitionActive: boolean = false;
+    private ballEnergyVisualProgress: number = 0;
+    private ballEnergyEvolutionStrength: number = 0;
+    private ballEnergyRenderedLevel: number = 0;
+    private ballEnergyRenderedProgress: number = -1;
     private ballTrailNodes: any[] = [];
     private ballTrailHistory: Array<{ x: number; y: number; scaleX: number; scaleY: number }> = [];
     private ballTrailLastX: number = 0;
@@ -1143,6 +1244,8 @@ export default class BallController extends Laya.Script {
 
         // 重置分数管理器
         ScoreManager.instance.reset();
+        // WP-E1.5 只重置派生视觉：同关死亡回到本关起始形态，换关使用新关卡检查点形态。
+        this.resetBallEnergyVisual(this.currentLevel, 0);
 
         // 同关死亡重来:消失平台全部复原
         this.clearDisappearRecoveryStates();
@@ -2149,23 +2252,23 @@ export default class BallController extends Laya.Script {
         this.ballVisualRoot.scaleY = 1;
 
         this.ballAura = this.ensureCyberBallPart(this.ballVisualRoot, "WPD_BallAura");
-        const shell = this.ensureCyberBallPart(this.ballVisualRoot, "WPD_BallShell");
+        this.ballShell = this.ensureCyberBallPart(this.ballVisualRoot, "WPD_BallShell");
         this.ballCore = this.ensureCyberBallPart(this.ballVisualRoot, "WPD_BallCore");
-        const circuits = this.ensureCyberBallPart(this.ballVisualRoot, "WPD_BallCircuits");
+        this.ballCircuits = this.ensureCyberBallPart(this.ballVisualRoot, "WPD_BallCircuits");
 
         this.ballAura.zOrder = 0;
-        shell.zOrder = 1;
+        this.ballShell.zOrder = 1;
         this.ballCore.zOrder = 2;
-        circuits.zOrder = 3;
+        this.ballCircuits.zOrder = 3;
 
         this.ballAura.graphics.clear();
         this.ballAura.graphics.drawCircle(0, 0, 9.5, "#164D68");
         this.ballAura.graphics.drawCircle(0, 0, 7.3, "#258BC0");
         this.ballAura.alpha = 0.22;
 
-        shell.graphics.clear();
-        shell.graphics.drawCircle(0, 0, 5.4, "#071824", "#74FAFF", 1.2);
-        shell.graphics.drawPoly(
+        this.ballShell.graphics.clear();
+        this.ballShell.graphics.drawCircle(0, 0, 5.4, "#071824", "#74FAFF", 1.2);
+        this.ballShell.graphics.drawPoly(
             0,
             0,
             [0, -5.8, 4.8, -2.7, 4.8, 2.7, 0, 5.8, -4.8, 2.7, -4.8, -2.7],
@@ -2178,15 +2281,16 @@ export default class BallController extends Laya.Script {
         this.ballCore.graphics.drawCircle(0, 0, 3.25, "#19DCE8", "#D8FFFF", 0.8);
         this.ballCore.graphics.drawCircle(0, 0, 1.65, "#F4FFFF");
 
-        circuits.graphics.clear();
-        circuits.graphics.drawLine(-4.2, -1.8, -2.3, -1.1, "#A96CFF", 0.8);
-        circuits.graphics.drawLine(2.3, 1.1, 4.2, 1.8, "#A96CFF", 0.8);
-        circuits.graphics.drawLine(-1.1, 3.4, 0, 5.1, "#53F8FF", 0.8);
-        circuits.graphics.drawLine(1.1, -3.4, 0, -5.1, "#53F8FF", 0.8);
-        circuits.graphics.drawCircle(-3.9, -1.7, 0.65, "#F7B5FF");
-        circuits.graphics.drawCircle(3.9, 1.7, 0.65, "#F7B5FF");
+        this.ballCircuits.graphics.clear();
+        this.ballCircuits.graphics.drawLine(-4.2, -1.8, -2.3, -1.1, "#A96CFF", 0.8);
+        this.ballCircuits.graphics.drawLine(2.3, 1.1, 4.2, 1.8, "#A96CFF", 0.8);
+        this.ballCircuits.graphics.drawLine(-1.1, 3.4, 0, 5.1, "#53F8FF", 0.8);
+        this.ballCircuits.graphics.drawLine(1.1, -3.4, 0, -5.1, "#53F8FF", 0.8);
+        this.ballCircuits.graphics.drawCircle(-3.9, -1.7, 0.65, "#F7B5FF");
+        this.ballCircuits.graphics.drawCircle(3.9, 1.7, 0.65, "#F7B5FF");
 
         this.initializeBallTrail(parent, ball);
+        this.resetBallEnergyVisual(this.currentLevel, ScoreManager.instance.getScore());
     }
 
     private ensureCyberBallPart(parent: any, name: string): any {
@@ -2226,10 +2330,182 @@ export default class BallController extends Laya.Script {
         this.ballTrailLastY = Number(ball.y) || 0;
     }
 
+    private resetBallEnergyVisual(level: number, score: number): void {
+        const normalizedLevel = Math.max(1, Math.min(this.maxLevel, Math.floor(level)));
+        const normalizedScore = Math.max(
+            0,
+            Math.min(BallController.BALL_ENERGY_STAGE_COUNT, Math.floor(score))
+        );
+        const progress = Math.pow(normalizedScore / BallController.BALL_ENERGY_STAGE_COUNT, 1.2);
+
+        this.ballEnergyObservedLevel = normalizedLevel;
+        this.ballEnergyObservedScore = normalizedScore;
+        this.ballEnergyTransitionFrom = progress;
+        this.ballEnergyTransitionTo = progress;
+        this.ballEnergyTransitionStartedAt = 0;
+        this.ballEnergyTransitionActive = false;
+        this.ballEnergyVisualProgress = progress;
+        this.applyBallEnergyVisual(normalizedLevel, progress, true);
+    }
+
+    private updateBallEnergyEvolution(): void {
+        const level = Math.max(1, Math.min(this.maxLevel, Math.floor(this.currentLevel)));
+        const score = Math.max(
+            0,
+            Math.min(BallController.BALL_ENERGY_STAGE_COUNT, Math.floor(ScoreManager.instance.getScore()))
+        );
+        const now = this.readBallEnergyTime();
+
+        if (level !== this.ballEnergyObservedLevel || score < this.ballEnergyObservedScore) {
+            this.resetBallEnergyVisual(level, score);
+            return;
+        }
+
+        if (score > this.ballEnergyObservedScore) {
+            const currentProgress = this.resolveBallEnergyTransition(now);
+            const targetProgress = Math.pow(score / BallController.BALL_ENERGY_STAGE_COUNT, 1.2);
+            this.ballEnergyObservedScore = score;
+            this.ballEnergyTransitionFrom = currentProgress;
+            this.ballEnergyTransitionTo = targetProgress;
+            this.ballEnergyTransitionStartedAt = now;
+            this.ballEnergyTransitionActive = targetProgress > currentProgress;
+        }
+
+        this.ballEnergyVisualProgress = this.resolveBallEnergyTransition(now);
+        this.applyBallEnergyVisual(level, this.ballEnergyVisualProgress, false);
+    }
+
+    private resolveBallEnergyTransition(now: number): number {
+        if (!this.ballEnergyTransitionActive) {
+            return this.ballEnergyTransitionTo;
+        }
+
+        const elapsed = Math.max(0, now - this.ballEnergyTransitionStartedAt);
+        const progress = Math.min(1, elapsed / BallController.BALL_ENERGY_ABSORPTION_DURATION_MS);
+        const eased = 1 - Math.pow(1 - progress, 2);
+        const visualProgress = this.ballEnergyTransitionFrom
+            + (this.ballEnergyTransitionTo - this.ballEnergyTransitionFrom) * eased;
+
+        if (progress >= 1) {
+            this.ballEnergyTransitionActive = false;
+            return this.ballEnergyTransitionTo;
+        }
+        return visualProgress;
+    }
+
+    private readBallEnergyTime(): number {
+        const timerValue = Number(Laya.timer?.currTimer);
+        return Number.isFinite(timerValue) ? timerValue : Date.now();
+    }
+
+    private applyBallEnergyVisual(level: number, progress: number, force: boolean): void {
+        const normalizedProgress = Math.max(0, Math.min(1, progress));
+        if (
+            !force
+            && this.ballEnergyRenderedLevel === level
+            && Math.abs(this.ballEnergyRenderedProgress - normalizedProgress) < 0.001
+        ) {
+            return;
+        }
+
+        const palettes = BallController.BALL_ENERGY_CHECKPOINT_PALETTES;
+        const startIndex = Math.max(0, Math.min(palettes.length - 2, level - 1));
+        const start = palettes[startIndex];
+        const target = palettes[startIndex + 1];
+        const mix = (from: number[], to: number[]): string => {
+            return this.mixBallEnergyColor(from, to, normalizedProgress);
+        };
+        const evolutionStrength = Math.max(
+            0,
+            Math.min(1, (startIndex + normalizedProgress) / Math.max(1, palettes.length - 1))
+        );
+
+        if (this.ballAura) {
+            this.ballAura.graphics.clear();
+            this.ballAura.graphics.drawCircle(0, 0, 9.5, mix(start.auraOuter, target.auraOuter));
+            this.ballAura.graphics.drawCircle(0, 0, 7.3, mix(start.auraInner, target.auraInner));
+        }
+
+        if (this.ballShell) {
+            this.ballShell.graphics.clear();
+            this.ballShell.graphics.drawCircle(
+                0,
+                0,
+                5.4,
+                mix(start.shellOuter, target.shellOuter),
+                mix(start.shellOuterStroke, target.shellOuterStroke),
+                1.2
+            );
+            this.ballShell.graphics.drawPoly(
+                0,
+                0,
+                [0, -5.8, 4.8, -2.7, 4.8, 2.7, 0, 5.8, -4.8, 2.7, -4.8, -2.7],
+                mix(start.shellPanel, target.shellPanel),
+                mix(start.shellPanelStroke, target.shellPanelStroke),
+                0.8
+            );
+        }
+
+        if (this.ballCore) {
+            this.ballCore.graphics.clear();
+            this.ballCore.graphics.drawCircle(
+                0,
+                0,
+                3.25,
+                mix(start.coreOuter, target.coreOuter),
+                mix(start.coreOuterStroke, target.coreOuterStroke),
+                0.8 + evolutionStrength * 0.7
+            );
+            this.ballCore.graphics.drawCircle(0, 0, 1.65, mix(start.coreInner, target.coreInner));
+        }
+
+        if (this.ballCircuits) {
+            const primary = mix(start.circuitPrimary, target.circuitPrimary);
+            const secondary = mix(start.circuitSecondary, target.circuitSecondary);
+            const node = mix(start.circuitNode, target.circuitNode);
+            const lineWidth = 0.8 + evolutionStrength * 0.35;
+            this.ballCircuits.graphics.clear();
+            this.ballCircuits.graphics.drawLine(-4.2, -1.8, -2.3, -1.1, primary, lineWidth);
+            this.ballCircuits.graphics.drawLine(2.3, 1.1, 4.2, 1.8, primary, lineWidth);
+            this.ballCircuits.graphics.drawLine(-1.1, 3.4, 0, 5.1, secondary, lineWidth);
+            this.ballCircuits.graphics.drawLine(1.1, -3.4, 0, -5.1, secondary, lineWidth);
+            this.ballCircuits.graphics.drawCircle(-3.9, -1.7, 0.65, node);
+            this.ballCircuits.graphics.drawCircle(3.9, 1.7, 0.65, node);
+        }
+
+        const trailOuter = mix(start.trailOuter, target.trailOuter);
+        const trailStroke = mix(start.trailStroke, target.trailStroke);
+        const trailInner = mix(start.trailInner, target.trailInner);
+        for (const trail of this.ballTrailNodes) {
+            trail.graphics.clear();
+            trail.graphics.drawCircle(0, 0, 5.2, trailOuter, trailStroke, 0.8);
+            trail.graphics.drawCircle(0, 0, 2.4, trailInner);
+        }
+
+        this.ballEnergyVisualProgress = normalizedProgress;
+        this.ballEnergyEvolutionStrength = evolutionStrength;
+        this.ballEnergyRenderedLevel = level;
+        this.ballEnergyRenderedProgress = normalizedProgress;
+    }
+
+    private mixBallEnergyColor(from: number[], to: number[], progress: number): string {
+        const red = Math.round(from[0] + (to[0] - from[0]) * progress);
+        const green = Math.round(from[1] + (to[1] - from[1]) * progress);
+        const blue = Math.round(from[2] + (to[2] - from[2]) * progress);
+        return "#" + this.ballEnergyHex(red) + this.ballEnergyHex(green) + this.ballEnergyHex(blue);
+    }
+
+    private ballEnergyHex(value: number): string {
+        const hex = Math.max(0, Math.min(255, value)).toString(16).toUpperCase();
+        return hex.length < 2 ? "0" + hex : hex;
+    }
+
     private updateBallVisualEffects(pulse: number): void {
         const ball = this.owner as any;
         const visual = this.ballVisualRoot;
         if (!ball || !visual) return;
+
+        this.updateBallEnergyEvolution();
 
         if (!this.ballVisualStateReady) {
             this.ballVisualStateReady = true;
@@ -2267,13 +2543,17 @@ export default class BallController extends Laya.Script {
             const auraScale = 0.94 + pulse * 0.14;
             this.ballAura.scaleX = auraScale;
             this.ballAura.scaleY = auraScale;
-            this.ballAura.alpha = 0.14 + pulse * 0.13;
+            this.ballAura.alpha = 0.14
+                + this.ballEnergyEvolutionStrength * 0.08
+                + pulse * (0.13 + this.ballEnergyEvolutionStrength * 0.04);
         }
         if (this.ballCore) {
             const coreScale = 0.9 + pulse * 0.18;
             this.ballCore.scaleX = coreScale;
             this.ballCore.scaleY = coreScale;
-            this.ballCore.alpha = 0.84 + pulse * 0.16;
+            this.ballCore.alpha = 0.84
+                + this.ballEnergyEvolutionStrength * 0.04
+                + pulse * (0.16 - this.ballEnergyEvolutionStrength * 0.04);
         }
 
         this.updateBallTrail(ball);
@@ -2317,7 +2597,9 @@ export default class BallController extends Laya.Script {
             trail.y = sample.y;
             trail.scaleX = sample.scaleX * (1 - i * 0.045);
             trail.scaleY = sample.scaleY * (1 - i * 0.045);
-            trail.alpha = motionAlpha * 0.24 * Math.pow(0.55, i);
+            trail.alpha = motionAlpha
+                * (0.24 + this.ballEnergyEvolutionStrength * 0.04)
+                * Math.pow(0.55, i);
         }
     }
 
@@ -2587,7 +2869,12 @@ export default class BallController extends Laya.Script {
         this.ballTrailHistory = [];
         this.ballVisualRoot = null;
         this.ballAura = null;
+        this.ballShell = null;
         this.ballCore = null;
+        this.ballCircuits = null;
+        this.ballEnergyTransitionActive = false;
+        this.ballEnergyRenderedLevel = 0;
+        this.ballEnergyRenderedProgress = -1;
         this.boundaryVisuals = [];
     }
 }
