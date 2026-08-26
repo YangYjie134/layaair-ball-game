@@ -60,6 +60,42 @@ const EXPECTED_ACTION_PLAN_JSON = "{\"directionRule\":\"relative-platform-center
 const EXPECTED_ACTION_PLAN_HASH = "96b732c738e48ba09d5d074dea40a270bbe52910ca1ccfe9eaa39cdc7f2ad641";
 const EXPECTED_SHORT_ACTION_PLAN_JSON = "{\"directionRule\":\"relative-platform-centers\",\"settleFrames\":1,\"horizonFrames\":1}";
 const EXPECTED_SHORT_ACTION_PLAN_HASH = "f9ec33297f1563eb1322c1932e1482807870d3144e12ec80ce895bf5cf11cffc";
+const EXPECTED_V3_TIMING = Object.freeze({
+    logicalRespawnMs: 300,
+    worldMaterializationMs: 2100,
+    coreReassemblyMs: 2550,
+    completionMs: 3000,
+});
+const V3_LIFECYCLE_UPDATE_OFFSETS = Object.freeze([
+    299,
+    EXPECTED_V3_TIMING.logicalRespawnMs,
+    301,
+    2099,
+    EXPECTED_V3_TIMING.worldMaterializationMs,
+    2101,
+    EXPECTED_V3_TIMING.coreReassemblyMs,
+    2999,
+    EXPECTED_V3_TIMING.completionMs,
+    3001,
+]);
+const ORDINARY_GAMEPLAY_METHODS = Object.freeze([
+    "updateMovingPlatform",
+    "resolveVerticalCollision",
+    "syncDisappearHighlightBar",
+    "checkHazards",
+    "releaseGroundIfUnsupported",
+    "clampToCanvas",
+    "checkDeath",
+]);
+const FATAL_FRAME_FORBIDDEN_METHODS = Object.freeze([
+    ...ORDINARY_GAMEPLAY_METHODS,
+    "restartGame",
+    "handleDeath",
+    "respawn",
+    "randomizePlatforms",
+    "randomizeHazards",
+    "syncBallSprite",
+]);
 const FAIRNESS_HELPER_NAMES = Object.freeze([
     "isSpikePlacementFair",
     "isAffectedJumpFair",
@@ -283,6 +319,27 @@ function installTrajectoryObservers(fixture, target) {
         return originalHandleDeath.apply(this, args);
     };
 
+    for (const method of ["startDeathReconstruction", "completeDeathReconstruction"]) {
+        const original = fixture.controller[method];
+        assert.equal(typeof original, "function", `production V3 method ${method} is unavailable`);
+        fixture.controller[method] = function observedV3LifecycleMethod(...args) {
+            const runtime = fixture.runtime;
+            const startEvent = runtime?.record("v3-lifecycle-start", {
+                method,
+                phaseBefore: this.deathReconstructionPhase,
+            }) ?? null;
+            try {
+                return original.apply(this, args);
+            } finally {
+                runtime?.record("v3-lifecycle-end", {
+                    method,
+                    startSequence: startEvent?.sequence ?? null,
+                    phaseAfter: this.deathReconstructionPhase,
+                });
+            }
+        };
+    }
+
     return { samples, preDeathSamples };
 }
 
@@ -403,30 +460,78 @@ function buildRuntimeDeathEvidence(fixture, deathEvent, preDeathSample) {
         && event.method === "handleDeath"
         && event.sequence < deathEvent.sequence
     ));
-    const respawnStart = events.find((event) => (
+    const reconstructionStart = events.find((event) => (
         sameStep(event)
-        && event.type === "method-start"
-        && event.method === "respawn"
+        && event.type === "v3-lifecycle-start"
+        && event.method === "startDeathReconstruction"
+        && event.sequence > deathEvent.sequence
+    ));
+    const reconstructionEnd = events.find((event) => (
+        sameStep(event)
+        && event.type === "v3-lifecycle-end"
+        && event.method === "startDeathReconstruction"
+        && event.startSequence === reconstructionStart?.sequence
+    ));
+    const handleDeathEnd = events.find((event) => (
+        sameStep(event)
+        && event.type === "method-end"
+        && event.method === "handleDeath"
         && event.sequence > deathEvent.sequence
     ));
     const stepEnd = events.find((event) => sameStep(event) && event.type === "step-end");
-    assert.ok(stepStart && handleDeathStart && respawnStart && stepEnd,
-        "death runtime bracket is incomplete");
+    assert.ok(stepStart && handleDeathStart && reconstructionStart && reconstructionEnd && handleDeathEnd && stepEnd,
+        "same-frame death containment bracket is incomplete");
     assert.ok(
         stepStart.sequence < handleDeathStart.sequence
         && handleDeathStart.sequence < deathEvent.sequence
-        && deathEvent.sequence < respawnStart.sequence
-        && respawnStart.sequence < stepEnd.sequence,
-        "death runtime bracket order changed",
+        && deathEvent.sequence < reconstructionStart.sequence
+        && reconstructionStart.sequence < reconstructionEnd.sequence
+        && reconstructionEnd.sequence < handleDeathEnd.sequence
+        && handleDeathEnd.sequence < stepEnd.sequence,
+        "same-frame death containment order changed",
+    );
+    const handleDeathStarts = events.filter((event) => (
+        sameStep(event)
+        && event.type === "method-start"
+        && event.method === "handleDeath"
+    ));
+    const reconstructionStarts = events.filter((event) => (
+        sameStep(event)
+        && event.type === "v3-lifecycle-start"
+        && event.method === "startDeathReconstruction"
+    ));
+    assert.equal(handleDeathStarts.length, 1, "fatal frame re-entered handleDeath");
+    assert.equal(reconstructionStarts.length, 1, "fatal frame started V3 reconstruction more than once");
+    const forbiddenStartsAfterFatal = events.filter((event) => (
+        sameStep(event)
+        && event.type === "method-start"
+        && event.sequence > deathEvent.sequence
+        && event.sequence < stepEnd.sequence
+        && FATAL_FRAME_FORBIDDEN_METHODS.includes(event.method)
+    ));
+    assert.deepStrictEqual(forbiddenStartsAfterFatal, [],
+        "ordinary gameplay or lifecycle work escaped after the fatal event");
+    assert.equal(fixture.controller.deathReconstructionPhase, "DECONSTRUCTING");
+    assert.equal(fixture.controller.deathLogicalRespawnDone, false);
+    assert.equal(fixture.controller.deathWorldGenerationDone, false);
+    assert.equal(
+        fixture.controller.deathReconstructionUntilMs - fixture.controller.deathReconstructionStartedAt,
+        EXPECTED_V3_TIMING.completionMs,
     );
     const commonBracket = {
         stepCallId: deathEvent.stepCallId,
         stepStartSequence: stepStart.sequence,
         handleDeathStartSequence: handleDeathStart.sequence,
         deathObserverSequence: deathEvent.sequence,
-        respawnSequence: respawnStart.sequence,
+        reconstructionStartSequence: reconstructionStart.sequence,
+        reconstructionEndSequence: reconstructionEnd.sequence,
+        handleDeathEndSequence: handleDeathEnd.sequence,
         stepEndSequence: stepEnd.sequence,
         beforeRespawn: deathEvent.beforeRespawn,
+        respawnInFatalFrame: false,
+        platformRerollInFatalFrame: false,
+        hazardRerollInFatalFrame: false,
+        ordinaryMethodStartsAfterFatal: [],
         orderValid: true,
     };
     const runtimeGroundState = preDeathSample.groundPlatform === "Ground"
@@ -441,9 +546,29 @@ function buildRuntimeDeathEvidence(fixture, deathEvent, preDeathSample) {
         && winGuard.sequence < handleDeathStart.sequence,
     );
     if (!runtimeGroundState || !orderedGroundChain) {
+        const spikeCheckStart = events.filter((event) => (
+            sameStep(event)
+            && event.type === "method-start"
+            && event.method === "checkHazards"
+            && event.sequence < handleDeathStart.sequence
+        )).pop();
+        const spikeCheckEnd = events.find((event) => (
+            sameStep(event)
+            && event.type === "method-end"
+            && event.method === "checkHazards"
+            && event.sequence > handleDeathEnd.sequence
+        ));
+        assert.ok(spikeCheckStart && spikeCheckEnd,
+            "non-Ground death is not bracketed by the production spike check");
         return {
-            kind: "other",
+            kind: "spike",
             bracket: commonBracket,
+            spikeSource: {
+                checkHazardsStartSequence: spikeCheckStart.sequence,
+                checkHazardsEndSequence: spikeCheckEnd.sequence,
+                containsHandleDeath: spikeCheckStart.sequence < handleDeathStart.sequence
+                    && handleDeathEnd.sequence < spikeCheckEnd.sequence,
+            },
             nonCausalGroundObservation: groundResolution && winGuard
                 ? {
                     resolveGroundSequence: groundResolution.sequence,
@@ -462,11 +587,258 @@ function buildRuntimeDeathEvidence(fixture, deathEvent, preDeathSample) {
             winGuardSequence: winGuard.sequence,
             handleDeathStartSequence: commonBracket.handleDeathStartSequence,
             deathObserverSequence: commonBracket.deathObserverSequence,
-            respawnSequence: commonBracket.respawnSequence,
+            reconstructionStartSequence: commonBracket.reconstructionStartSequence,
+            reconstructionEndSequence: commonBracket.reconstructionEndSequence,
+            handleDeathEndSequence: commonBracket.handleDeathEndSequence,
             stepEndSequence: commonBracket.stepEndSequence,
             beforeRespawn: commonBracket.beforeRespawn,
+            respawnInFatalFrame: commonBracket.respawnInFatalFrame,
+            platformRerollInFatalFrame: commonBracket.platformRerollInFatalFrame,
+            hazardRerollInFatalFrame: commonBracket.hazardRerollInFatalFrame,
+            ordinaryMethodStartsAfterFatal: commonBracket.ordinaryMethodStartsAfterFatal,
             runtimeScoreIsWon: winGuard.value,
             orderValid: commonBracket.orderValid,
+        },
+    };
+}
+
+function captureV3LifecycleState(fixture) {
+    const { controller, ball, runtime } = fixture;
+    const methodCount = (method) => runtime.events.filter((event) => (
+        event.type === "method-start" && event.method === method
+    )).length;
+    const lifecycleCount = (method) => runtime.events.filter((event) => (
+        event.type === "v3-lifecycle-start" && event.method === method
+    )).length;
+    return {
+        phase: controller.deathReconstructionPhase,
+        locked: controller.deathReconstructionPhase !== "IDLE"
+            && controller.deathReconstructionUntilMs > 0,
+        counts: {
+            handleDeath: methodCount("handleDeath"),
+            reconstructionStart: lifecycleCount("startDeathReconstruction"),
+            respawn: methodCount("respawn"),
+            randomizePlatforms: methodCount("randomizePlatforms"),
+            randomizeHazards: methodCount("randomizeHazards"),
+            reconstructionComplete: lifecycleCount("completeDeathReconstruction"),
+        },
+        logicalState: {
+            centerX: controller.centerX,
+            centerY: controller.centerY,
+            previousY: controller.previousY,
+            vx: controller.vx,
+            vy: controller.vy,
+            onGround: controller.onGround,
+            groundPlatform: controller.groundPlatform?.name ?? null,
+            platformsActive: controller.platformsActive,
+            deathEnabled: controller.deathEnabled,
+            ballX: ball.x,
+            ballY: ball.y,
+        },
+    };
+}
+
+function advanceV3LifecycleUpdate(fixture, startedAt, elapsedMs) {
+    const { controller, runtime } = fixture;
+    assert.equal(runtime.activeStep, null, "V3 lifecycle update overlapped a fixed-action step");
+    const activeStep = {
+        stepCallId: runtime.nextStepCallId++,
+        frame: null,
+        phase: "v3-lifecycle",
+        timeMs: startedAt + elapsedMs,
+        inputReads: [],
+        timerReads: [],
+    };
+    runtime.activeStep = activeStep;
+    global.Laya.timer.currTimer = activeStep.timeMs;
+    const updateStart = runtime.record("v3-update-start", {
+        elapsedMs,
+        phaseBefore: controller.deathReconstructionPhase,
+    });
+    const originalConsoleLog = console.log;
+    let completed = false;
+    console.log = (...args) => runtime.record("console-log", { args: args.map((value) => String(value)) });
+    try {
+        assert.equal(controller.onUpdate, Object.getPrototypeOf(controller).onUpdate,
+            "production onUpdate was replaced");
+        controller.onUpdate();
+        completed = true;
+    } finally {
+        console.log = originalConsoleLog;
+        runtime.record("v3-update-end", {
+            elapsedMs,
+            completed,
+            phaseAfter: controller.deathReconstructionPhase,
+        });
+        runtime.activeStep = null;
+    }
+    assert.equal(completed, true, `V3 lifecycle update failed at ${elapsedMs}ms`);
+    const updateEvents = runtime.events.filter((event) => event.stepCallId === activeStep.stepCallId);
+    return {
+        elapsedMs,
+        updateStartSequence: updateStart.sequence,
+        updateEndSequence: updateEvents[updateEvents.length - 1].sequence,
+        ordinaryGameplayMethodStarts: updateEvents
+            .filter((event) => event.type === "method-start" && ORDINARY_GAMEPLAY_METHODS.includes(event.method))
+            .map((event) => ({ method: event.method, sequence: event.sequence })),
+        lifecycleMethodStarts: updateEvents
+            .filter((event) => event.type === "method-start" || event.type === "v3-lifecycle-start")
+            .map((event) => ({ method: event.method, sequence: event.sequence })),
+        state: captureV3LifecycleState(fixture),
+    };
+}
+
+function verifyPhasedV3Lifecycle(fixture, deathEvent, deathEvidence) {
+    const { controller, runtime } = fixture;
+    const productionTiming = {
+        logicalRespawnMs: controller.constructor.DEATH_DECONSTRUCT_END_MS,
+        worldMaterializationMs: controller.constructor.DEATH_WORLD_MATERIALIZE_START_MS,
+        coreReassemblyMs: controller.constructor.DEATH_CORE_REASSEMBLY_START_MS,
+        completionMs: controller.constructor.DEATH_RECONSTRUCTION_DURATION_MS,
+    };
+    assert.deepStrictEqual(productionTiming, EXPECTED_V3_TIMING, "production V3 timing constants changed");
+
+    const fatalState = captureV3LifecycleState(fixture);
+    assert.equal(fatalState.phase, "DECONSTRUCTING");
+    assert.equal(fatalState.locked, true);
+    assert.deepStrictEqual(fatalState.counts, {
+        handleDeath: 1,
+        reconstructionStart: 1,
+        respawn: 0,
+        randomizePlatforms: 0,
+        randomizeHazards: 0,
+        reconstructionComplete: 0,
+    });
+
+    const startedAt = controller.deathReconstructionStartedAt;
+    const updates = V3_LIFECYCLE_UPDATE_OFFSETS.map((elapsedMs) => (
+        advanceV3LifecycleUpdate(fixture, startedAt, elapsedMs)
+    ));
+    const at = (elapsedMs) => {
+        const update = updates.find((candidate) => candidate.elapsedMs === elapsedMs);
+        assert.ok(update, `missing V3 lifecycle update at ${elapsedMs}ms`);
+        return update;
+    };
+    const beforeRespawn = at(299);
+    const respawnBoundary = at(EXPECTED_V3_TIMING.logicalRespawnMs);
+    const bufferAfterRespawn = at(301);
+    const beforeWorld = at(2099);
+    const worldBoundary = at(EXPECTED_V3_TIMING.worldMaterializationMs);
+    const worldAfterBoundary = at(2101);
+    const coreBoundary = at(EXPECTED_V3_TIMING.coreReassemblyMs);
+    const beforeCompletion = at(2999);
+    const completionBoundary = at(EXPECTED_V3_TIMING.completionMs);
+    const afterCompletion = at(3001);
+
+    assert.deepStrictEqual(beforeRespawn.state.counts, fatalState.counts,
+        "lifecycle action occurred before the 300ms threshold");
+    assert.equal(respawnBoundary.state.counts.respawn, 1);
+    assert.equal(respawnBoundary.state.phase, "BUFFERING");
+    assert.equal(respawnBoundary.state.locked, true);
+    assert.deepStrictEqual(respawnBoundary.state.logicalState, {
+        centerX: controller.startX,
+        centerY: controller.startY,
+        previousY: controller.startY,
+        vx: 0,
+        vy: 0,
+        onGround: false,
+        groundPlatform: null,
+        platformsActive: false,
+        deathEnabled: false,
+        ballX: controller.startX,
+        ballY: controller.startY,
+    });
+    for (const update of [respawnBoundary, bufferAfterRespawn, beforeWorld]) {
+        assert.equal(update.state.counts.respawn, 1, "logical respawn repeated during the Buffer");
+        assert.equal(update.state.counts.randomizePlatforms, 0, "platform reroll occurred before 2100ms");
+        assert.equal(update.state.counts.randomizeHazards, 0, "hazard reroll occurred before 2100ms");
+    }
+
+    assert.equal(worldBoundary.state.counts.respawn, 1);
+    assert.equal(worldBoundary.state.counts.randomizePlatforms, 1);
+    assert.equal(worldBoundary.state.counts.randomizeHazards, 1);
+    const platformReroll = runtime.events.find((event) => (
+        event.type === "method-start" && event.method === "randomizePlatforms"
+    ));
+    const hazardReroll = runtime.events.find((event) => (
+        event.type === "method-start" && event.method === "randomizeHazards"
+    ));
+    assert.ok(platformReroll && hazardReroll && platformReroll.sequence < hazardReroll.sequence,
+        "V3 world-generation order changed");
+    for (const update of [worldAfterBoundary, coreBoundary, beforeCompletion]) {
+        assert.deepStrictEqual(update.state.counts, worldBoundary.state.counts,
+            "V3 lifecycle action repeated before reconstruction completion");
+    }
+    assert.equal(coreBoundary.state.phase, "CORE_REASSEMBLING");
+
+    for (const update of updates.filter((candidate) => candidate.elapsedMs < EXPECTED_V3_TIMING.completionMs)) {
+        assert.equal(update.state.locked, true, `gameplay unlocked early at ${update.elapsedMs}ms`);
+        assert.deepStrictEqual(update.ordinaryGameplayMethodStarts, [],
+            `ordinary gameplay escaped the reconstruction lock at ${update.elapsedMs}ms`);
+    }
+    assert.equal(completionBoundary.state.phase, "IDLE");
+    assert.equal(completionBoundary.state.locked, false);
+    assert.ok(completionBoundary.ordinaryGameplayMethodStarts.length > 0,
+        "normal gameplay did not resume on the first eligible completion update");
+    assert.deepStrictEqual(completionBoundary.state.counts, {
+        handleDeath: 1,
+        reconstructionStart: 1,
+        respawn: 1,
+        randomizePlatforms: 1,
+        randomizeHazards: 1,
+        reconstructionComplete: 1,
+    });
+    assert.deepStrictEqual(afterCompletion.state.counts, completionBoundary.state.counts,
+        "V3 lifecycle action repeated after completion");
+    assert.equal(afterCompletion.state.phase, "IDLE");
+
+    const reconstructionStart = runtime.events.find((event) => (
+        event.type === "v3-lifecycle-start" && event.method === "startDeathReconstruction"
+    ));
+    const respawn = runtime.events.find((event) => event.type === "method-start" && event.method === "respawn");
+    const completion = runtime.events.find((event) => (
+        event.type === "v3-lifecycle-start" && event.method === "completeDeathReconstruction"
+    ));
+    assert.ok(
+        deathEvent.sequence < reconstructionStart.sequence
+        && reconstructionStart.sequence < respawn.sequence
+        && respawn.sequence < platformReroll.sequence
+        && platformReroll.sequence < hazardReroll.sequence
+        && hazardReroll.sequence < completion.sequence
+        && completion.sequence < completionBoundary.updateEndSequence,
+        "phased V3 lifecycle event order changed",
+    );
+    assert.equal(deathEvidence.bracket.respawnInFatalFrame, false);
+
+    return {
+        timingMs: productionTiming,
+        firstEligibleUpdates: {
+            respawn: respawnBoundary.elapsedMs,
+            worldGeneration: worldBoundary.elapsedMs,
+            completion: completionBoundary.elapsedMs,
+        },
+        fatal: {
+            state: fatalState,
+            deathObserverSequence: deathEvent.sequence,
+            reconstructionStartSequence: reconstructionStart.sequence,
+            sameFrameContainment: deathEvidence.bracket,
+        },
+        beforeRespawn,
+        respawnBoundary,
+        bufferBeforeWorld: beforeWorld,
+        worldBoundary,
+        coreBoundary,
+        beforeCompletion,
+        completionBoundary,
+        afterCompletion,
+        eventOrder: {
+            death: deathEvent.sequence,
+            reconstructionStart: reconstructionStart.sequence,
+            respawn: respawn.sequence,
+            randomizePlatforms: platformReroll.sequence,
+            randomizeHazards: hazardReroll.sequence,
+            reconstructionComplete: completion.sequence,
+            gameplayUnlocked: completionBoundary.updateEndSequence,
         },
     };
 }
@@ -527,12 +899,11 @@ function runCase(seed, recordIndex, actionPlan, expectedPlanJson, expectedPlanHa
         && event.platform === target.name
     ));
     const deathEvidence = buildRuntimeDeathEvidence(fixture, deathEvent, preDeathSample);
-    let deathBracketing = "NOT_APPLICABLE";
-    if (deathCount === 1) {
-        assert.equal(smoke.runtimeAudit.deathEventsBracketedBeforeRespawn, true,
-            `${label} death event is not bracketed before respawn`);
-        deathBracketing = true;
-    }
+    const lifecycleEvidence = deathCount === 1
+        ? verifyPhasedV3Lifecycle(fixture, deathEvent, deathEvidence)
+        : null;
+    const deathContainment = deathCount === 1 ? true : "NOT_APPLICABLE";
+    const phasedLifecycle = deathCount === 1 ? true : "NOT_APPLICABLE";
     const stopReason = smoke.trajectorySummary.stopReason;
     assert.ok(stopReasonAudit.length > 0, "harness stopReason inventory is empty");
     assert.equal(
@@ -592,6 +963,7 @@ function runCase(seed, recordIndex, actionPlan, expectedPlanJson, expectedPlanHa
             bracket: deathEvidence?.bracket ?? null,
         },
         deathEvidence,
+        phasedV3Lifecycle: lifecycleEvidence,
         preRespawn: deathEvent?.beforeState ?? null,
         finalBall: {
             provenance: provenanceForFinalSample(finalSample),
@@ -608,7 +980,13 @@ function runCase(seed, recordIndex, actionPlan, expectedPlanJson, expectedPlanHa
         runtimeAudit: {
             stepBracketsValid: smoke.runtimeAudit.stepBracketsValid,
             postStepLandingOnly: smoke.runtimeAudit.postStepLandingOnly,
-            deathEventsBracketedBeforeRespawn: deathBracketing,
+            sameFrameDeathContainment: deathContainment,
+            phasedV3Lifecycle: phasedLifecycle,
+            legacySameFrameRespawnAudit: {
+                value: smoke.runtimeAudit.deathEventsBracketedBeforeRespawn,
+                authoritative: false,
+                supersededBy: "runtimeAudit.phasedV3Lifecycle",
+            },
             firstStepSequence: smoke.runtimeAudit.firstStepSequence,
             lastStepEndSequence: smoke.runtimeAudit.lastStepEndSequence,
         },
@@ -634,6 +1012,7 @@ function runCase(seed, recordIndex, actionPlan, expectedPlanJson, expectedPlanHa
         planAfter,
         preDeathSample,
         finalSample,
+        lifecycleEvidence,
         report,
         reportHash: sha256Json(report),
     };
@@ -649,21 +1028,26 @@ function assertCommonSmoke(caseRun) {
     assert.equal(smoke.runtimeAudit.stepBracketsValid, true, "step start/end brackets are incomplete");
     assert.equal(smoke.runtimeAudit.postStepLandingOnly, true, "landing observation escaped the post-step boundary");
     if (smoke.deathEvents.length === 0) {
-        assert.equal(report.runtimeAudit.deathEventsBracketedBeforeRespawn, "NOT_APPLICABLE");
+        assert.equal(report.runtimeAudit.sameFrameDeathContainment, "NOT_APPLICABLE");
+        assert.equal(report.runtimeAudit.phasedV3Lifecycle, "NOT_APPLICABLE");
         assert.equal(report.deathEvidence, null);
+        assert.equal(report.phasedV3Lifecycle, null);
         assert.equal(report.death.primary, null);
         assert.equal(report.death.bracket, null);
         assert.equal(report.preRespawn, null);
     } else {
         assert.equal(smoke.deathEvents.length, 1);
-        assert.equal(smoke.runtimeAudit.deathEventsBracketedBeforeRespawn, true,
-            "death evidence is not bracketed before respawn");
-        assert.equal(report.runtimeAudit.deathEventsBracketedBeforeRespawn, true);
+        assert.equal(smoke.runtimeAudit.deathEventsBracketedBeforeRespawn, false,
+            "legacy harness audit unexpectedly still found same-frame respawn");
+        assert.equal(report.runtimeAudit.sameFrameDeathContainment, true);
+        assert.equal(report.runtimeAudit.phasedV3Lifecycle, true);
         assert.ok(report.deathEvidence);
+        assert.ok(report.phasedV3Lifecycle);
         assert.ok(report.death.primary);
         assert.ok(report.death.bracket);
         assert.ok(report.preRespawn);
     }
+    assert.equal(Object.prototype.hasOwnProperty.call(report.runtimeAudit, "deathEventsBracketedBeforeRespawn"), false);
     assert.equal(new Set(smoke.runtimeAudit.stepCallIds).size, smoke.stepPhysicsCallCount, "stepCallId values are not unique");
     assert.equal(smoke.filesWritten, 0, "C2 verifier wrote files");
     assert.equal(smoke.productionFairnessHelperDirectCalls, 0);
@@ -729,7 +1113,8 @@ function assertSeedZero(caseRun) {
     assert.deepStrictEqual(report.termination, { reason: "death-observer", deathCount: 1 });
     assert.equal(report.death.count, 1);
     assert.deepStrictEqual(report.death.primary, smoke.deathEvents[0]);
-    assert.equal(report.deathEvidence.kind, "other");
+    assert.equal(report.deathEvidence.kind, "spike");
+    assert.equal(report.deathEvidence.spikeSource.containsHandleDeath, true);
     assert.deepStrictEqual(report.death.bracket, report.deathEvidence.bracket);
     assert.equal(report.finalBall.provenance, "pre-respawn");
     assert.deepStrictEqual(report.deathEvidence.nonCausalGroundObservation, {
@@ -821,6 +1206,7 @@ function assertSeedOneShort(caseRun) {
         bracket: null,
     });
     assert.equal(report.deathEvidence, null);
+    assert.equal(report.phasedV3Lifecycle, null);
     assert.equal(report.preRespawn, null);
     assert.equal(smoke.finalGroundPlatform, null);
     assert.equal(smoke.targetIdentityMatch, false);
@@ -901,10 +1287,10 @@ function locateGroundDeathProductionEvidence(caseRun) {
     const handleDeathLine = conditionLine + 1;
     assert.equal(lines[handleDeathLine - 1].trim(), "this.handleDeath();");
     assert.deepStrictEqual({ methodLine, groundGuardLine, conditionLine, handleDeathLine }, {
-        methodLine: 355,
-        groundGuardLine: 403,
-        conditionLine: 406,
-        handleDeathLine: 407,
+        methodLine: 398,
+        groundGuardLine: 446,
+        conditionLine: 449,
+        handleDeathLine: 450,
     });
     assert.equal(caseRun.preDeathSample.deathEnabled, true);
     assert.equal(caseRun.preDeathSample.scoreHasWon, false);
@@ -922,7 +1308,7 @@ function locateGroundDeathProductionEvidence(caseRun) {
             deathEnabled: caseRun.preDeathSample.deathEnabled,
             scoreIsWon: caseRun.preDeathSample.scoreHasWon,
         },
-        deathObserverBeforeRespawnEvidence: runtimeEvidence.bracket,
+        fatalFrameContainmentEvidence: runtimeEvidence.bracket,
     };
 }
 
@@ -933,6 +1319,10 @@ function assertBoundaryCounts(caseRuns) {
         parallelPhysicsDefinitions += (verifierSource.match(new RegExp(`function\\s+${name}\\s*\\(`, "g")) ?? []).length;
     }
     const directStepCalls = (verifierSource.match(/(?:BallController(?:\.prototype)?|fixture\.controller|controller)\.stepPhysics\s*\(/g) ?? []).length;
+    const productionOnUpdateCalls = (verifierSource.match(/(?:fixture\.controller|controller)\.onUpdate\s*\(/g) ?? []).length;
+    const directLifecycleMethodCalls = (verifierSource.match(
+        /(?:fixture\.controller|controller)\.(?:startDeathReconstruction|updateDeathReconstruction|completeDeathReconstruction)\s*\(/g,
+    ) ?? []).length;
     const manualMovingUpdates = (verifierSource.match(/\.updateMovingPlatform\s*\(/g) ?? []).length;
     const teleports = (verifierSource.match(/(?:fixture\.controller|controller|ball|source|target)\.(?:centerX|centerY|vx|vy|x|y)\s*=(?!=)/g) ?? []).length;
     let fileWriteCalls = 0;
@@ -945,6 +1335,8 @@ function assertBoundaryCounts(caseRuns) {
         assert.equal(caseRun.smoke.filesWritten, 0);
     }
     assert.equal(parallelPhysicsDefinitions + directStepCalls, 0, "verifier added a parallel/direct physics path");
+    assert.equal(productionOnUpdateCalls, 1, "V3 lifecycle must advance through one production onUpdate call site");
+    assert.equal(directLifecycleMethodCalls, 0, "verifier directly invokes a private V3 lifecycle method");
     assert.equal(manualMovingUpdates, 0, "verifier manually updates moving platforms");
     assert.equal(teleports, 0, "verifier teleports runtime objects");
     assert.equal(fileWriteCalls, 0, "verifier contains a repository file-write call");
@@ -958,6 +1350,8 @@ function assertBoundaryCounts(caseRuns) {
             auditEvidence: "deprecated",
         },
         parallelPhysicsImplementations: parallelPhysicsDefinitions + directStepCalls,
+        productionOnUpdateCallSites: productionOnUpdateCalls,
+        directLifecycleMethodCalls,
         manualMovingUpdates,
         teleports,
         unexpectedRepositoryFilesWritten: fileWriteCalls,
@@ -989,7 +1383,7 @@ function printReport(
     console.log(`[c2-step] target identity match: ${smoke.targetIdentityMatch}`);
     console.log(`[c2-step] death events: ${JSON.stringify(smoke.deathEvents)}`);
     console.log(`[c2-step] trajectory summary: ${JSON.stringify(smoke.trajectorySummary)}`);
-    console.log(`[c2-step] observer audit: ${JSON.stringify(smoke.runtimeAudit)}`);
+    console.log(`[c2-step] legacy fixed-step observer audit: ${JSON.stringify(smoke.runtimeAudit)}`);
     console.log(`[c2-step] invalid schema stable case: ${JSON.stringify(invalidAudit.stableCase)}`);
     console.log(`[c2-step] legacy harness fairness-helper count (non-authoritative, deprecated as audit evidence): ${smoke.productionFairnessHelperDirectCalls}`);
     console.log(`[c2-step] files written: ${smoke.filesWritten}`);
@@ -1016,6 +1410,9 @@ function printReport(
         seed1Long: orderA.seed1Long.report.deathEvidence,
         seed1Short: orderA.seed1Short.report.deathEvidence,
     })}`);
+    console.log(`[v3-death] spike phased lifecycle: ${JSON.stringify(orderA.seed0Long.report.phasedV3Lifecycle)}`);
+    console.log(`[v3-death] Ground phased lifecycle: ${JSON.stringify(orderA.seed1Long.report.phasedV3Lifecycle)}`);
+    console.log("[v3-death] source coverage: spike + Ground; fall/out-of-bounds has no existing fixed-action fixture in this verifier.");
     console.log(`[c2-step] ground-death production evidence: ${JSON.stringify(groundDeathEvidence)}`);
     console.log(`[c2-step] multiple-death assertion guard: ${JSON.stringify(multipleDeathAudit)}`);
     console.log(`[c2-step] harness stopReason literals: ${JSON.stringify(stopReasonAudit)}`);

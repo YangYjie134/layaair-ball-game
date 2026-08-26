@@ -27,6 +27,46 @@ interface MovingConfig {
  */
 type DisappearState = 'idle' | 'counting' | 'hidden';
 type SpikeSide = 'left' | 'right';
+type DeathReconstructionPhase = 'IDLE' | 'DECONSTRUCTING' | 'BUFFERING' | 'WORLD_MATERIALIZING' | 'CORE_REASSEMBLING';
+
+interface DeathOldWorldFragment {
+    node: any;
+    startX: number;
+    startY: number;
+    driftX: number;
+    driftY: number;
+    spin: number;
+}
+
+interface DeathBufferFragment {
+    node: any;
+    baseX: number;
+    baseY: number;
+    orbitX: number;
+    orbitY: number;
+    phase: number;
+    restRotation: number;
+}
+
+interface DeathPlatformDuplicate {
+    node: any;
+    duplicateIndex: number;
+    offsetX: number;
+    offsetY: number;
+    phase: number;
+}
+
+interface DeathPlatformVisual {
+    platform: any;
+    duplicates: DeathPlatformDuplicate[];
+    rank: number;
+}
+
+interface DeathGroundCanonicalState {
+    platform: any;
+    visible: boolean;
+    alpha: number;
+}
 
 /**
  * 消失平台单块的运行时状态配置
@@ -207,7 +247,6 @@ export default class BallController extends Laya.Script {
             },
         );
     }
-
     public stepPhysics(ball: any, input: BallPhysicsInput, time: BallPhysicsTime, env: BallPhysicsEnvironment): void {
 
         // ── 步骤 0：胜利后按 R 重开本局（最先检测，命中则跳过本帧后续逻辑）──
@@ -236,6 +275,7 @@ export default class BallController extends Laya.Script {
         const right = input.right();
         // 检测跳跃按键（W 或 up）
         const jump = input.jump();
+        if (this.holdDeathReconstructionLock(ball, jump, env)) return;
 
         // 如果按下左键则向左加速
         if (left) this.vx -= this.moveAccel;
@@ -321,6 +361,7 @@ export default class BallController extends Laya.Script {
         for (const platform of this.platforms) {
             env.updateMovingPlatform(platform);// 新增：先更新移动平台位置
             env.resolveVerticalCollision(platform, time);// 检测球是否与平台发生垂直碰撞，并处理落地逻辑
+            if (this.isDeathReconstructionActive()) return;
         }
         env.syncDisappearHighlightBar();
         // 平台是单向平台：只处理从上往下落到平台顶面，不处理平台侧面和底面。
@@ -329,11 +370,13 @@ export default class BallController extends Laya.Script {
         // 尖刺检测放在 X 位移之后，读取本帧最终球心 X（消除 ~5px 半帧滞后）；
         // 仍在 clampToCanvas 之前，保持“尖刺死亡优先于掉落死亡”的同帧判定顺序。
         env.checkHazards();
+        if (this.isDeathReconstructionActive()) return;
         env.releaseGroundIfUnsupported();// 检查球是否离开平台边缘，如果离开则取消落地状态，让球自然下落。
 
         // 最后处理顶墙、左右墙和掉出屏幕保护，再把结果写回节点一次。
         // 检测边界碰撞
         env.clampToCanvas();// 检查球是否撞到墙体边界，并处理反弹和位置限制，同时检测是否掉出屏幕底部并触发复活逻辑
+        if (this.isDeathReconstructionActive()) return;
         // 将球的位置同步回Laya节点
         env.syncBallSprite(ball);// 将计算后的球心坐标写回 Laya 节点，更新球的实际显示位置
     }
@@ -562,17 +605,277 @@ export default class BallController extends Laya.Script {
     private shakeStartedAt: number = 0;
     private deathFlash: any = null;
     private deathFlashStartedAt: number = 0;
-    private deathParticleLayer: any = null;
-    private deathParticleStartedAt: number = 0;
-    private deathParticleOriginX: number = 0;
-    private deathParticleOriginY: number = 0;
-    private deathParticles: Array<{ node: any; vx: number; vy: number; spin: number }> = [];
+    private deathFragmentLayer: any = null;
+    private deathFragmentStartedAt: number = 0;
+    private deathFragmentOriginX: number = 0;
+    private deathFragmentOriginY: number = 0;
+    private deathFragments: Array<{ node: any; vx: number; vy: number; spin: number }> = [];
+    private static readonly DEATH_RECONSTRUCTION_DURATION_MS: number = 3000;
+    private static readonly DEATH_DECONSTRUCT_END_MS: number = 300;
+    private static readonly DEATH_WORLD_MATERIALIZE_START_MS: number = 2100;
+    private static readonly DEATH_CORE_REASSEMBLY_START_MS: number = 2550;
+    private static readonly DEATH_PLATFORM_LOCK_THRESHOLD: number = 0.98;
+    private static readonly DEATH_BALL_SHARD_COUNT: number = 8;
+    private static readonly DEATH_BUFFER_FRAGMENT_COUNT: number = 24;
+    private static readonly DEATH_OLD_WORLD_FRAGMENT_BUDGET: number = 24;
+    private static readonly DEATH_PLATFORM_DUPLICATE_COUNT: number = 2;
+    private static readonly DEATH_COUNTDOWN_BEAT_MS: number = 600;
+    private static readonly DEATH_COUNTDOWN_STRUCTURAL_SEGMENT_COUNT: number = 6;
+    private static readonly DEATH_COUNTDOWN_DIGIT_SCALE: number = 0.72;
+    private static readonly DEATH_RETICLE_SCALE: number = 0.72;
+    private static readonly DEATH_RETICLE_COLORS: Record<DeathReticleTone, string> = {
+        PRIMARY: "#42D7FF",
+        ENERGY: "#2F8FFF",
+        SOFT: "#B9ECFF",
+        DARK: "#0A3D86",
+    };
+    private static readonly DEATH_RETICLE_TEMPLATES: DeathReticleTemplate[] = [
+        {
+            id: 'TEMPLATE_A',
+            animation: 'CORNER_LOCK',
+            parts: [
+                { x: -0.61, y: -0.72, length: 0.34, thickness: 0.022, rotation: 0, tone: 'PRIMARY' },
+                { x: -0.78, y: -0.55, length: 0.28, thickness: 0.022, rotation: 90, tone: 'ENERGY' },
+                { x: -0.79, y: -0.75, length: 0.19, thickness: 0.026, rotation: -45, tone: 'SOFT' },
+                { x: 0.61, y: -0.72, length: 0.34, thickness: 0.022, rotation: 0, tone: 'PRIMARY' },
+                { x: 0.78, y: -0.55, length: 0.28, thickness: 0.022, rotation: 90, tone: 'ENERGY' },
+                { x: 0.79, y: -0.75, length: 0.19, thickness: 0.026, rotation: 45, tone: 'SOFT' },
+                { x: -0.61, y: 0.72, length: 0.34, thickness: 0.022, rotation: 0, tone: 'PRIMARY' },
+                { x: -0.78, y: 0.55, length: 0.28, thickness: 0.022, rotation: 90, tone: 'ENERGY' },
+                { x: -0.79, y: 0.75, length: 0.19, thickness: 0.026, rotation: 45, tone: 'SOFT' },
+                { x: 0.61, y: 0.72, length: 0.34, thickness: 0.022, rotation: 0, tone: 'PRIMARY' },
+                { x: 0.78, y: 0.55, length: 0.28, thickness: 0.022, rotation: 90, tone: 'ENERGY' },
+                { x: 0.79, y: 0.75, length: 0.19, thickness: 0.026, rotation: -45, tone: 'SOFT' },
+                { x: 0, y: -0.88, length: 0.12, thickness: 0.014, rotation: 90, tone: 'DARK' },
+                { x: 0, y: 0.88, length: 0.12, thickness: 0.014, rotation: 90, tone: 'DARK' },
+            ],
+        },
+        {
+            id: 'TEMPLATE_B',
+            animation: 'SIDE_DEPLOY',
+            parts: [
+                { x: -0.82, y: 0, length: 0.48, thickness: 0.022, rotation: 90, tone: 'PRIMARY' },
+                { x: -0.70, y: -0.34, length: 0.25, thickness: 0.022, rotation: 0, tone: 'ENERGY' },
+                { x: -0.70, y: 0.34, length: 0.25, thickness: 0.022, rotation: 0, tone: 'ENERGY' },
+                { x: 0.82, y: 0, length: 0.48, thickness: 0.022, rotation: 90, tone: 'PRIMARY' },
+                { x: 0.70, y: -0.34, length: 0.25, thickness: 0.022, rotation: 0, tone: 'ENERGY' },
+                { x: 0.70, y: 0.34, length: 0.25, thickness: 0.022, rotation: 0, tone: 'ENERGY' },
+                { x: -0.30, y: -0.82, length: 0.16, thickness: 0.018, rotation: 90, tone: 'DARK' },
+                { x: 0, y: -0.86, length: 0.21, thickness: 0.024, rotation: 90, tone: 'SOFT' },
+                { x: 0.30, y: -0.82, length: 0.16, thickness: 0.018, rotation: 90, tone: 'DARK' },
+                { x: -0.30, y: 0.82, length: 0.16, thickness: 0.018, rotation: 90, tone: 'DARK' },
+                { x: 0, y: 0.86, length: 0.21, thickness: 0.024, rotation: 90, tone: 'SOFT' },
+                { x: 0.30, y: 0.82, length: 0.16, thickness: 0.018, rotation: 90, tone: 'DARK' },
+                { x: -0.94, y: 0, length: 0.10, thickness: 0.014, rotation: 0, tone: 'DARK' },
+                { x: 0.94, y: 0, length: 0.10, thickness: 0.014, rotation: 0, tone: 'DARK' },
+            ],
+        },
+        {
+            id: 'TEMPLATE_C',
+            animation: 'DUAL_ALIGN',
+            parts: [
+                { x: -0.24, y: -0.69, length: 0.28, thickness: 0.021, rotation: -45, tone: 'PRIMARY' },
+                { x: -0.56, y: -0.37, length: 0.28, thickness: 0.021, rotation: -45, tone: 'ENERGY' },
+                { x: 0.24, y: -0.69, length: 0.28, thickness: 0.021, rotation: 45, tone: 'PRIMARY' },
+                { x: 0.56, y: -0.37, length: 0.28, thickness: 0.021, rotation: 45, tone: 'ENERGY' },
+                { x: 0.56, y: 0.37, length: 0.28, thickness: 0.021, rotation: -45, tone: 'ENERGY' },
+                { x: 0.24, y: 0.69, length: 0.28, thickness: 0.021, rotation: -45, tone: 'PRIMARY' },
+                { x: -0.24, y: 0.69, length: 0.28, thickness: 0.021, rotation: 45, tone: 'PRIMARY' },
+                { x: -0.56, y: 0.37, length: 0.28, thickness: 0.021, rotation: 45, tone: 'ENERGY' },
+                { x: -0.42, y: -0.42, length: 0.20, thickness: 0.018, rotation: 0, tone: 'DARK' },
+                { x: -0.50, y: -0.34, length: 0.16, thickness: 0.018, rotation: 90, tone: 'SOFT' },
+                { x: 0.42, y: -0.42, length: 0.20, thickness: 0.018, rotation: 0, tone: 'DARK' },
+                { x: 0.50, y: -0.34, length: 0.16, thickness: 0.018, rotation: 90, tone: 'SOFT' },
+                { x: -0.42, y: 0.42, length: 0.20, thickness: 0.018, rotation: 0, tone: 'DARK' },
+                { x: -0.50, y: 0.34, length: 0.16, thickness: 0.018, rotation: 90, tone: 'SOFT' },
+                { x: 0.42, y: 0.42, length: 0.20, thickness: 0.018, rotation: 0, tone: 'DARK' },
+                { x: 0.50, y: 0.34, length: 0.16, thickness: 0.018, rotation: 90, tone: 'SOFT' },
+                { x: 0, y: -0.88, length: 0.12, thickness: 0.014, rotation: 90, tone: 'ENERGY' },
+                { x: 0, y: 0.88, length: 0.12, thickness: 0.014, rotation: 90, tone: 'ENERGY' },
+            ],
+        },
+        {
+            id: 'TEMPLATE_D',
+            animation: 'SEQUENTIAL_LIGHT',
+            parts: [
+                { x: 0, y: -0.76, length: 0.30, thickness: 0.025, rotation: 90, tone: 'SOFT' },
+                { x: 0.76, y: 0, length: 0.30, thickness: 0.025, rotation: 0, tone: 'SOFT' },
+                { x: 0, y: 0.76, length: 0.30, thickness: 0.025, rotation: 90, tone: 'SOFT' },
+                { x: -0.76, y: 0, length: 0.30, thickness: 0.025, rotation: 0, tone: 'SOFT' },
+                { x: 0.43, y: -0.69, length: 0.14, thickness: 0.018, rotation: 32, tone: 'ENERGY' },
+                { x: 0.69, y: -0.43, length: 0.14, thickness: 0.018, rotation: 58, tone: 'DARK' },
+                { x: 0.69, y: 0.43, length: 0.14, thickness: 0.018, rotation: -58, tone: 'ENERGY' },
+                { x: 0.43, y: 0.69, length: 0.14, thickness: 0.018, rotation: -32, tone: 'DARK' },
+                { x: -0.43, y: 0.69, length: 0.14, thickness: 0.018, rotation: 32, tone: 'ENERGY' },
+                { x: -0.69, y: 0.43, length: 0.14, thickness: 0.018, rotation: 58, tone: 'DARK' },
+                { x: -0.69, y: -0.43, length: 0.14, thickness: 0.018, rotation: -58, tone: 'ENERGY' },
+                { x: -0.43, y: -0.69, length: 0.14, thickness: 0.018, rotation: -32, tone: 'DARK' },
+                { x: -0.16, y: -0.92, length: 0.08, thickness: 0.013, rotation: 0, tone: 'DARK' },
+                { x: 0.16, y: 0.92, length: 0.08, thickness: 0.013, rotation: 0, tone: 'DARK' },
+            ],
+        },
+        {
+            id: 'TEMPLATE_E',
+            animation: 'VERTICAL_CONVERGE',
+            parts: [
+                { x: 0, y: -0.80, length: 0.43, thickness: 0.024, rotation: 0, tone: 'PRIMARY' },
+                { x: -0.47, y: -0.76, length: 0.24, thickness: 0.018, rotation: 0, tone: 'DARK' },
+                { x: 0.50, y: -0.76, length: 0.17, thickness: 0.022, rotation: 0, tone: 'SOFT' },
+                { x: -0.16, y: -0.68, length: 0.17, thickness: 0.018, rotation: 90, tone: 'ENERGY' },
+                { x: 0, y: 0.80, length: 0.34, thickness: 0.024, rotation: 0, tone: 'PRIMARY' },
+                { x: -0.50, y: 0.76, length: 0.17, thickness: 0.022, rotation: 0, tone: 'SOFT' },
+                { x: 0.45, y: 0.76, length: 0.27, thickness: 0.018, rotation: 0, tone: 'DARK' },
+                { x: 0.18, y: 0.68, length: 0.17, thickness: 0.018, rotation: 90, tone: 'ENERGY' },
+                { x: -0.75, y: -0.30, length: 0.24, thickness: 0.023, rotation: -42, tone: 'ENERGY' },
+                { x: -0.78, y: 0.27, length: 0.20, thickness: 0.019, rotation: 42, tone: 'DARK' },
+                { x: 0.75, y: -0.30, length: 0.24, thickness: 0.023, rotation: 42, tone: 'ENERGY' },
+                { x: 0.78, y: 0.27, length: 0.20, thickness: 0.019, rotation: -42, tone: 'DARK' },
+                { x: -0.90, y: 0, length: 0.11, thickness: 0.014, rotation: 0, tone: 'DARK' },
+                { x: 0.90, y: 0, length: 0.11, thickness: 0.014, rotation: 0, tone: 'DARK' },
+            ],
+        },
+        {
+            id: 'TEMPLATE_F',
+            animation: 'FRAGMENT_LOCK',
+            parts: [
+                { x: 0, y: -0.82, length: 0.30, thickness: 0.024, rotation: 0, tone: 'SOFT' },
+                { x: 0.45, y: -0.70, length: 0.25, thickness: 0.020, rotation: 32, tone: 'PRIMARY' },
+                { x: 0.73, y: -0.39, length: 0.22, thickness: 0.019, rotation: 62, tone: 'ENERGY' },
+                { x: 0.80, y: 0.14, length: 0.26, thickness: 0.022, rotation: 96, tone: 'DARK' },
+                { x: 0.59, y: 0.61, length: 0.28, thickness: 0.020, rotation: -45, tone: 'PRIMARY' },
+                { x: 0.10, y: 0.82, length: 0.24, thickness: 0.024, rotation: -5, tone: 'SOFT' },
+                { x: -0.42, y: 0.72, length: 0.25, thickness: 0.020, rotation: 30, tone: 'ENERGY' },
+                { x: -0.76, y: 0.34, length: 0.24, thickness: 0.021, rotation: 70, tone: 'PRIMARY' },
+                { x: -0.76, y: -0.28, length: 0.19, thickness: 0.019, rotation: -72, tone: 'DARK' },
+                { x: -0.44, y: -0.70, length: 0.28, thickness: 0.021, rotation: -32, tone: 'ENERGY' },
+                { x: -0.43, y: -0.36, length: 0.18, thickness: 0.018, rotation: 0, tone: 'DARK' },
+                { x: 0.43, y: -0.36, length: 0.18, thickness: 0.018, rotation: 0, tone: 'DARK' },
+                { x: -0.43, y: 0.36, length: 0.18, thickness: 0.018, rotation: 0, tone: 'DARK' },
+                { x: 0.43, y: 0.36, length: 0.18, thickness: 0.018, rotation: 0, tone: 'DARK' },
+                { x: 0.88, y: -0.12, length: 0.09, thickness: 0.014, rotation: 90, tone: 'ENERGY' },
+                { x: -0.88, y: 0.12, length: 0.09, thickness: 0.014, rotation: 90, tone: 'ENERGY' },
+            ],
+        },
+        {
+            id: 'TEMPLATE_G',
+            animation: 'SEQUENTIAL_LIGHT',
+            parts: [
+                { x: -0.43, y: -0.68, length: 0.36, thickness: 0.022, rotation: 30, tone: 'PRIMARY' },
+                { x: 0.43, y: -0.68, length: 0.36, thickness: 0.022, rotation: -30, tone: 'ENERGY' },
+                { x: -0.72, y: -0.34, length: 0.28, thickness: 0.020, rotation: 90, tone: 'SOFT' },
+                { x: 0.72, y: -0.34, length: 0.22, thickness: 0.019, rotation: 90, tone: 'DARK' },
+                { x: -0.72, y: 0.34, length: 0.22, thickness: 0.019, rotation: 90, tone: 'DARK' },
+                { x: 0.72, y: 0.34, length: 0.28, thickness: 0.020, rotation: 90, tone: 'SOFT' },
+                { x: -0.43, y: 0.68, length: 0.36, thickness: 0.022, rotation: -30, tone: 'ENERGY' },
+                { x: 0.43, y: 0.68, length: 0.36, thickness: 0.022, rotation: 30, tone: 'PRIMARY' },
+                { x: 0, y: -0.86, length: 0.11, thickness: 0.014, rotation: 90, tone: 'ENERGY' },
+                { x: 0.86, y: 0, length: 0.11, thickness: 0.014, rotation: 0, tone: 'DARK' },
+                { x: 0, y: 0.86, length: 0.11, thickness: 0.014, rotation: 90, tone: 'DARK' },
+                { x: -0.86, y: 0, length: 0.11, thickness: 0.014, rotation: 0, tone: 'ENERGY' },
+            ],
+        },
+        {
+            id: 'TEMPLATE_H',
+            animation: 'CORNER_LOCK',
+            parts: [
+                { x: -0.47, y: -0.52, length: 0.18, thickness: 0.022, rotation: 0, tone: 'SOFT' },
+                { x: -0.58, y: -0.41, length: 0.20, thickness: 0.022, rotation: 90, tone: 'PRIMARY' },
+                { x: 0.47, y: -0.52, length: 0.18, thickness: 0.022, rotation: 0, tone: 'SOFT' },
+                { x: 0.58, y: -0.41, length: 0.20, thickness: 0.022, rotation: 90, tone: 'PRIMARY' },
+                { x: -0.47, y: 0.52, length: 0.18, thickness: 0.022, rotation: 0, tone: 'SOFT' },
+                { x: -0.58, y: 0.41, length: 0.20, thickness: 0.022, rotation: 90, tone: 'ENERGY' },
+                { x: 0.47, y: 0.52, length: 0.18, thickness: 0.022, rotation: 0, tone: 'SOFT' },
+                { x: 0.58, y: 0.41, length: 0.20, thickness: 0.022, rotation: 90, tone: 'ENERGY' },
+                { x: -0.67, y: -0.73, length: 0.20, thickness: 0.018, rotation: 0, tone: 'DARK' },
+                { x: -0.79, y: -0.61, length: 0.22, thickness: 0.018, rotation: 90, tone: 'ENERGY' },
+                { x: 0.67, y: -0.73, length: 0.20, thickness: 0.018, rotation: 0, tone: 'DARK' },
+                { x: 0.79, y: -0.61, length: 0.22, thickness: 0.018, rotation: 90, tone: 'ENERGY' },
+                { x: -0.67, y: 0.73, length: 0.20, thickness: 0.018, rotation: 0, tone: 'DARK' },
+                { x: -0.79, y: 0.61, length: 0.22, thickness: 0.018, rotation: 90, tone: 'PRIMARY' },
+                { x: 0.67, y: 0.73, length: 0.20, thickness: 0.018, rotation: 0, tone: 'DARK' },
+                { x: 0.79, y: 0.61, length: 0.22, thickness: 0.018, rotation: 90, tone: 'PRIMARY' },
+                { x: 0.88, y: -0.20, length: 0.08, thickness: 0.013, rotation: 0, tone: 'DARK' },
+                { x: 0.88, y: -0.04, length: 0.13, thickness: 0.014, rotation: 0, tone: 'ENERGY' },
+                { x: 0.88, y: 0.13, length: 0.10, thickness: 0.013, rotation: 0, tone: 'DARK' },
+                { x: -0.88, y: 0.24, length: 0.08, thickness: 0.013, rotation: 0, tone: 'ENERGY' },
+            ],
+        },
+        {
+            id: 'TEMPLATE_I',
+            animation: 'FRAGMENT_LOCK',
+            parts: [
+                { x: -0.52, y: -0.61, length: 0.26, thickness: 0.021, rotation: 46, tone: 'PRIMARY' },
+                { x: -0.19, y: -0.79, length: 0.22, thickness: 0.019, rotation: 12, tone: 'ENERGY' },
+                { x: 0.19, y: -0.78, length: 0.16, thickness: 0.018, rotation: -12, tone: 'DARK' },
+                { x: 0.51, y: -0.59, length: 0.22, thickness: 0.021, rotation: -46, tone: 'SOFT' },
+                { x: 0.69, y: 0.10, length: 0.18, thickness: 0.019, rotation: 90, tone: 'PRIMARY' },
+                { x: 0.52, y: 0.58, length: 0.24, thickness: 0.021, rotation: 46, tone: 'ENERGY' },
+                { x: 0.14, y: 0.79, length: 0.25, thickness: 0.020, rotation: 8, tone: 'PRIMARY' },
+                { x: -0.28, y: 0.74, length: 0.18, thickness: 0.018, rotation: -18, tone: 'DARK' },
+                { x: -0.59, y: 0.48, length: 0.26, thickness: 0.021, rotation: -55, tone: 'SOFT' },
+                { x: -0.72, y: -0.08, length: 0.18, thickness: 0.019, rotation: 90, tone: 'ENERGY' },
+                { x: 0.87, y: -0.31, length: 0.08, thickness: 0.013, rotation: 0, tone: 'DARK' },
+                { x: 0.90, y: -0.17, length: 0.13, thickness: 0.014, rotation: 0, tone: 'ENERGY' },
+                { x: 0.87, y: -0.03, length: 0.09, thickness: 0.013, rotation: 0, tone: 'DARK' },
+            ],
+        },
+        {
+            id: 'TEMPLATE_J',
+            animation: 'DUAL_ALIGN',
+            parts: [
+                { x: -0.20, y: -0.73, length: 0.27, thickness: 0.022, rotation: -45, tone: 'SOFT' },
+                { x: -0.52, y: -0.43, length: 0.22, thickness: 0.020, rotation: -45, tone: 'PRIMARY' },
+                { x: 0.20, y: -0.73, length: 0.27, thickness: 0.022, rotation: 45, tone: 'SOFT' },
+                { x: 0.52, y: -0.43, length: 0.22, thickness: 0.020, rotation: 45, tone: 'ENERGY' },
+                { x: 0.52, y: 0.43, length: 0.22, thickness: 0.020, rotation: -45, tone: 'PRIMARY' },
+                { x: 0.20, y: 0.73, length: 0.27, thickness: 0.022, rotation: -45, tone: 'SOFT' },
+                { x: -0.20, y: 0.73, length: 0.27, thickness: 0.022, rotation: 45, tone: 'SOFT' },
+                { x: -0.52, y: 0.43, length: 0.22, thickness: 0.020, rotation: 45, tone: 'ENERGY' },
+                { x: -0.86, y: -0.24, length: 0.09, thickness: 0.013, rotation: 0, tone: 'DARK' },
+                { x: -0.88, y: 0, length: 0.14, thickness: 0.014, rotation: 0, tone: 'PRIMARY' },
+                { x: -0.86, y: 0.24, length: 0.09, thickness: 0.013, rotation: 0, tone: 'DARK' },
+                { x: 0.86, y: -0.24, length: 0.09, thickness: 0.013, rotation: 0, tone: 'DARK' },
+                { x: 0.88, y: 0, length: 0.14, thickness: 0.014, rotation: 0, tone: 'ENERGY' },
+                { x: 0.86, y: 0.24, length: 0.09, thickness: 0.013, rotation: 0, tone: 'DARK' },
+            ],
+        },
+    ];
+    private deathReconstructionPhase: DeathReconstructionPhase = 'IDLE';
+    private deathReconstructionStartedAt: number = 0;
+    private deathReconstructionUntilMs: number = 0;
+    private deathLogicalRespawnDone: boolean = false;
+    private deathWorldGenerationDone: boolean = false;
+    private deathCoreReassemblyStarted: boolean = false;
+    private deathReconstructionAmbience: any = null;
+    private deathBufferLayer: any = null;
+    private deathBufferFragments: DeathBufferFragment[] = [];
+    private deathCountdownDigitLayer: any = null;
+    private deathCountdownDigitSegments: any[] = [];
+    private deathCountdownDigitValue: 3 | 2 | 1 | 0 | null = null;
+    private deathCountdownDigitEnergyState: 'NONE' | 'RED' | 'BLUE' = 'NONE';
+    private deathReticleGroup: any = null;
+    private deathReticleParts: DeathReticlePartVisual[] = [];
+    private deathReticleTemplateIndex: number | null = null;
+    private lastDeathReticleTemplateIndex: number = -1;
+    private deathReticleSequence: number = 0;
+    private deathReticleVisualScale: number = 0;
+    private deathCountdownColorState: 'NONE' | 'RED' | 'BLUE' = 'NONE';
+    private deathOldWorldVisuals: DeathOldWorldFragment[] = [];
+    private deathPlatformVisuals: DeathPlatformVisual[] = [];
+    private deathPlatformFinalVisibility: Map<any, boolean> = new Map();
+    private deathHazardFinalVisibility: Map<any, boolean> = new Map();
+    private deathHazardOwnerPlatforms: Map<any, any> = new Map();
+    private deathGroundCanonicalState: DeathGroundCanonicalState | null = null;
+    private deathBallReassemblyLayer: any = null;
+    private deathBallShards: Array<{ node: any; startX: number; startY: number; spin: number }> = [];
+    private deathBallWasVisible: boolean = true;
 
     public setLevelTransitionHandler(handler: ((level: number, resume: () => void) => void) | null): void {
         this.levelTransitionHandler = handler;
     }
 
     private beginLevelTransition(): void {
+        this.clearDeathReconstruction();
         const handler = this.levelTransitionHandler;
         if (!handler) {
             this.enabled = true;
@@ -957,20 +1260,1268 @@ export default class BallController extends Laya.Script {
         }
     }
 
-    // 死亡代表当前随机挑战失败：先换同关布局，再复活到出生点。
+    private isDeathReconstructionActive(): boolean {
+        return this.deathReconstructionPhase !== 'IDLE';
+    }
+
+    private holdDeathReconstructionLock(ball: any, jump: boolean, env: BallPhysicsEnvironment): boolean {
+        if (this.deathReconstructionUntilMs <= 0) return false;
+
+        const now = this.getWpBNow();
+        this.updateDeathReconstruction(now);
+
+        // Consume edge-triggered input throughout the lock without accumulating motion.
+        this.prevJumpKey = jump;
+        this.vx = 0;
+        this.vy = 0;
+        if (this.deathReconstructionPhase === 'IDLE') return false;
+
+        if (this.deathReconstructionPhase !== 'DECONSTRUCTING') {
+            this.centerX = this.startX;
+            this.centerY = this.startY;
+            this.previousY = this.startY;
+            env.syncBallSprite(ball);
+        }
+        return true;
+    }
+
+    private startDeathReconstruction(): void {
+        this.clearDeathReconstruction();
+        const ball = this.owner as any;
+        const now = this.getWpBNow();
+
+        // Persistent Ground state must be sampled before any reconstruction writer suppresses it.
+        this.captureDeathGroundCanonicalState();
+
+        this.deathReconstructionPhase = 'DECONSTRUCTING';
+        this.deathReconstructionStartedAt = now;
+        this.deathReconstructionUntilMs = now + BallController.DEATH_RECONSTRUCTION_DURATION_MS;
+        this.deathLogicalRespawnDone = false;
+        this.deathWorldGenerationDone = false;
+        this.deathCoreReassemblyStarted = false;
+        this.deathBallWasVisible = ball?.visible !== false;
+        this.deathHazardOwnerPlatforms.clear();
+        this.selectDeathReticleTemplate();
+
+        this.mountDeathReconstructionAmbience();
+        this.createOldWorldDeconstructionVisuals();
+        if (ball) ball.visible = true;
+        if (this.ballVisualRoot) {
+            this.ballVisualRoot.visible = true;
+            this.ballVisualRoot.alpha = 1;
+        }
+        for (const trail of this.ballTrailNodes) {
+            trail.visible = false;
+            trail.alpha = 0;
+        }
+    }
+
+    private captureDeathGroundCanonicalState(): void {
+        const ground = this.platforms.find((platform: any) => platform?.name === "Ground") ?? null;
+        if (!ground) {
+            this.deathGroundCanonicalState = null;
+            return;
+        }
+        const alpha = Number(ground.alpha);
+        this.deathGroundCanonicalState = {
+            platform: ground,
+            visible: ground.visible !== false,
+            alpha: Number.isFinite(alpha) ? alpha : 1,
+        };
+    }
+
+    private restoreDeathGroundCanonicalState(): void {
+        const canonical = this.deathGroundCanonicalState;
+        if (!canonical?.platform) return;
+        canonical.platform.visible = canonical.visible;
+        canonical.platform.alpha = canonical.alpha;
+    }
+
+    private mountDeathReconstructionAmbience(): void {
+        if (this.deathReconstructionAmbience || !Laya.stage) return;
+
+        const stageWidth = Math.max(1, Number(Laya.stage.width) || 1280);
+        const stageHeight = Math.max(1, Number(Laya.stage.height) || 720);
+        const layer = new Laya.Sprite();
+        layer.name = "WPV3_ReassemblyBuffer";
+        layer.width = stageWidth;
+        layer.height = stageHeight;
+        layer.zOrder = 9988;
+        layer.alpha = 0;
+        layer.mouseEnabled = false;
+        layer.mouseThrough = true;
+
+        const dim = new Laya.Sprite();
+        dim.name = "WPV3_GlobalDim";
+        dim.alpha = 0.72;
+        if (typeof dim.graphics?.drawRect === "function") {
+            dim.graphics.drawRect(0, 0, stageWidth, stageHeight, "#030711");
+        }
+        layer.addChild(dim);
+
+        Laya.stage.addChild(layer);
+        this.deathReconstructionAmbience = layer;
+        this.createDeathReticle(layer);
+        this.createDeathBufferFragments(layer);
+        this.setDeathCountdownColorState('RED');
+    }
+
+    private getDeathVisualUnit(index: number, salt: number): number {
+        let value = Math.imul(index + 1 + salt * 31, 0x45d9f3b)
+            ^ Math.imul(this.currentLevel + 17 + salt, 0x27d4eb2d);
+        value = Math.imul(value ^ (value >>> 16), 0x45d9f3b);
+        return ((value ^ (value >>> 16)) >>> 0) / 0xFFFFFFFF;
+    }
+
+    private getDeathCountdownGeometry(): {
+        stageWidth: number;
+        stageHeight: number;
+        digitCenterY: number;
+        digitWidth: number;
+        digitHeight: number;
+        reticleScale: number;
+    } {
+        const stageWidth = Math.max(1, Number(Laya.stage?.width) || 1280);
+        const stageHeight = Math.max(1, Number(Laya.stage?.height) || 720);
+        const referenceDigitHeight = Math.max(96, Math.min(144, stageHeight * 0.18));
+        const digitHeight = referenceDigitHeight * BallController.DEATH_COUNTDOWN_DIGIT_SCALE;
+        const compositionCenterY = stageHeight * 0.48;
+        return {
+            stageWidth,
+            stageHeight,
+            digitCenterY: compositionCenterY,
+            digitWidth: digitHeight * 0.72,
+            digitHeight,
+            reticleScale: referenceDigitHeight * BallController.DEATH_RETICLE_SCALE,
+        };
+    }
+
+    private selectDeathReticleTemplate(): void {
+        const templateCount = BallController.DEATH_RETICLE_TEMPLATES.length;
+        if (templateCount <= 0) {
+            this.deathReticleTemplateIndex = null;
+            return;
+        }
+
+        this.deathReticleSequence = (this.deathReticleSequence + 1) >>> 0;
+        let value = Math.imul(this.deathReticleSequence ^ 0x6D2B79F5, 0x45D9F3B)
+            ^ Math.imul(this.currentLevel + 0x165667B1, 0x27D4EB2D);
+        value = Math.imul(value ^ (value >>> 16), 0x7FEB352D);
+        value ^= value >>> 15;
+        let templateIndex = (value >>> 0) % templateCount;
+        if (templateCount > 1 && templateIndex === this.lastDeathReticleTemplateIndex) {
+            templateIndex = (templateIndex + 1) % templateCount;
+        }
+        this.deathReticleTemplateIndex = templateIndex;
+        this.lastDeathReticleTemplateIndex = templateIndex;
+    }
+
+    private createDeathReticle(parent: any): void {
+        if (!parent || typeof parent.addChild !== "function") return;
+        const templateIndex = this.deathReticleTemplateIndex;
+        if (templateIndex === null) return;
+        const template = BallController.DEATH_RETICLE_TEMPLATES[templateIndex];
+        if (!template) return;
+
+        if (this.deathReticleGroup) this.destroyVisualNode(this.deathReticleGroup);
+        this.deathReticleParts = [];
+        const geometry = this.getDeathCountdownGeometry();
+        const group = new Laya.Sprite();
+        group.name = "WPV31F_CentralReticle_" + template.id;
+        group.x = geometry.stageWidth * 0.5;
+        group.y = geometry.digitCenterY;
+        group.zOrder = 2;
+        group.blendMode = "lighter";
+        group.mouseEnabled = false;
+        group.mouseThrough = true;
+        group.alpha = 0;
+
+        for (let i = 0; i < template.parts.length; i++) {
+            const partTemplate = template.parts[i];
+            const node = new Laya.Sprite();
+            node.name = "WPV31F_ReticlePart_" + template.id + "_" + i;
+            node.mouseEnabled = false;
+            node.mouseThrough = true;
+            node.alpha = 0;
+            group.addChild(node);
+            const visual = { node, template: partTemplate };
+            this.deathReticleParts.push(visual);
+            this.paintDeathReticlePart(visual, geometry.reticleScale);
+        }
+
+        parent.addChild(group);
+        this.deathReticleGroup = group;
+        this.deathReticleVisualScale = geometry.reticleScale;
+    }
+
+    private paintDeathReticlePart(visual: DeathReticlePartVisual, visualScale: number): void {
+        const graphics = visual.node?.graphics;
+        if (!graphics) return;
+        graphics.clear();
+        const part = visual.template;
+        const length = Math.max(4, part.length * visualScale);
+        const weightScale = part.tone === 'DARK' ? 0.7 : (part.tone === 'ENERGY' ? 0.82 : 0.9);
+        const thickness = Math.max(0.8, part.thickness * visualScale * weightScale);
+        const toneColor = BallController.DEATH_RETICLE_COLORS[part.tone];
+        const coreColor = part.tone === 'DARK'
+            ? BallController.DEATH_RETICLE_COLORS.DARK
+            : (part.tone === 'SOFT' ? "#F3FCFF" : toneColor);
+        this.drawDeathCountdownStructuralBar(
+            graphics,
+            length + thickness * 1.1,
+            thickness * 1.65,
+            BallController.DEATH_RETICLE_COLORS.DARK,
+        );
+        this.drawDeathCountdownStructuralBar(
+            graphics,
+            length + thickness * 0.42,
+            thickness * 1.05,
+            part.tone === 'DARK' ? BallController.DEATH_RETICLE_COLORS.ENERGY : toneColor,
+        );
+        this.drawDeathCountdownStructuralBar(
+            graphics,
+            length,
+            thickness * 0.48,
+            coreColor,
+        );
+    }
+
+    private updateDeathReticle(elapsed: number): void {
+        const group = this.deathReticleGroup;
+        const templateIndex = this.deathReticleTemplateIndex;
+        if (!group || templateIndex === null) return;
+        const template = BallController.DEATH_RETICLE_TEMPLATES[templateIndex];
+        if (!template) return;
+
+        const geometry = this.getDeathCountdownGeometry();
+        group.x = geometry.stageWidth * 0.5;
+        group.y = geometry.digitCenterY;
+        if (this.deathReticleVisualScale !== geometry.reticleScale) {
+            for (const visual of this.deathReticleParts) {
+                this.paintDeathReticlePart(visual, geometry.reticleScale);
+            }
+            this.deathReticleVisualScale = geometry.reticleScale;
+        }
+
+        const entranceProgress = Math.max(0, Math.min(1, elapsed / 460));
+        const entrance = 1 - Math.pow(1 - entranceProgress, 3);
+        const remaining = 1 - entrance;
+        const completionProgress = Math.max(0, Math.min(
+            1,
+            (elapsed - BallController.DEATH_CORE_REASSEMBLY_START_MS)
+                / (BallController.DEATH_RECONSTRUCTION_DURATION_MS - BallController.DEATH_CORE_REASSEMBLY_START_MS),
+        ));
+        group.scaleX = 1 + completionProgress * 0.012;
+        group.scaleY = 1 + completionProgress * 0.012;
+        group.alpha = Math.min(1, 0.72 + entrance * 0.18 + completionProgress * 0.1);
+
+        const visualScale = geometry.reticleScale;
+        for (let i = 0; i < this.deathReticleParts.length; i++) {
+            const visual = this.deathReticleParts[i];
+            const part = visual.template;
+            const node = visual.node;
+            const baseX = part.x * visualScale;
+            const baseY = part.y * visualScale;
+            let x = baseX;
+            let y = baseY;
+            let rotation = part.rotation;
+            let localEntrance = entrance;
+            let scale = 1;
+
+            switch (template.animation) {
+                case 'CORNER_LOCK': {
+                    const xDirection = baseX < 0 ? -1 : 1;
+                    const yDirection = baseY < 0 ? -1 : 1;
+                    x += xDirection * remaining * 14;
+                    y += yDirection * remaining * 14;
+                    break;
+                }
+                case 'SIDE_DEPLOY':
+                    x = baseX * (0.55 + entrance * 0.45);
+                    break;
+                case 'DUAL_ALIGN':
+                    x += (i % 2 === 0 ? -1 : 1) * remaining * 10;
+                    y += (i % 4 < 2 ? -1 : 1) * remaining * 4;
+                    break;
+                case 'SEQUENTIAL_LIGHT': {
+                    const stagger = i / Math.max(1, this.deathReticleParts.length - 1) * 0.46;
+                    localEntrance = Math.max(0, Math.min(1, (entranceProgress - stagger) / 0.54));
+                    localEntrance = 1 - Math.pow(1 - localEntrance, 2);
+                    break;
+                }
+                case 'VERTICAL_CONVERGE': {
+                    const direction = baseY < 0 ? -1 : 1;
+                    y += direction * remaining * 16;
+                    break;
+                }
+                case 'FRAGMENT_LOCK': {
+                    const radialLength = Math.max(1, Math.sqrt(baseX * baseX + baseY * baseY));
+                    x += baseX / radialLength * remaining * 11;
+                    y += baseY / radialLength * remaining * 11;
+                    rotation += (i % 2 === 0 ? -1 : 1) * remaining * 12;
+                    scale = 0.84 + entrance * 0.16;
+                    break;
+                }
+            }
+
+            const toneAlpha = part.tone === 'DARK' ? 0.48 : (part.tone === 'SOFT' ? 0.94 : 0.78);
+            const restrainedPulse = (Math.sin(elapsed * 0.004 + i * 0.73) + 1) * 0.025;
+            node.x = x;
+            node.y = y;
+            node.rotation = rotation;
+            node.scaleX = scale;
+            node.scaleY = scale;
+            node.alpha = Math.min(1, localEntrance * (toneAlpha + restrainedPulse + completionProgress * 0.08));
+        }
+    }
+
+    private destroyDeathReticle(): void {
+        if (this.deathReticleGroup) this.destroyVisualNode(this.deathReticleGroup);
+        this.deathReticleGroup = null;
+        this.deathReticleParts = [];
+        this.deathReticleTemplateIndex = null;
+        this.deathReticleVisualScale = 0;
+    }
+
+    private getDeathCountdownPalette(state: 'RED' | 'BLUE'): {
+        main: string;
+        highlight: string;
+        glow: string;
+        outline: string;
+    } {
+        return state === 'RED'
+            ? { main: "#FF5267", highlight: "#FF8794", glow: "#FF173B", outline: "#72051B" }
+            : { main: "#42D7FF", highlight: "#B9ECFF", glow: "#2F8FFF", outline: "#0A3D86" };
+    }
+
+    private drawDeathReconstructionFragment(
+        graphics: any,
+        length: number,
+        thickness: number,
+        color: string,
+    ): void {
+        if (typeof graphics?.drawPoly === "function") {
+            graphics.drawPoly(
+                -length * 0.5,
+                -thickness * 0.5,
+                [0, 0, length, thickness * 0.18, length * 0.78, thickness, length * 0.12, thickness * 0.82],
+                color,
+            );
+        } else if (typeof graphics?.drawRect === "function") {
+            graphics.drawRect(-length * 0.5, -thickness * 0.5, length, thickness, color);
+        }
+    }
+
+    private paintDeathBufferFragment(node: any, index: number, state: 'RED' | 'BLUE'): void {
+        const graphics = node?.graphics;
+        if (!graphics) return;
+        graphics.clear();
+        const palette = this.getDeathCountdownPalette(state);
+        const colors = [palette.main, palette.highlight, palette.glow, palette.outline];
+        const visualScale = this.getDeathCountdownGeometry().digitHeight / 86;
+        const length = (7 + (index % 4) * 1.25) * visualScale;
+        const thickness = (2 + (index % 3) * 0.48) * visualScale;
+        this.drawDeathReconstructionFragment(graphics, length, thickness, colors[index % colors.length]);
+    }
+
+    private setDeathCountdownColorState(state: 'RED' | 'BLUE'): void {
+        if (this.deathCountdownColorState === state) return;
+        this.deathCountdownColorState = state;
+        for (let i = 0; i < this.deathBufferFragments.length; i++) {
+            this.paintDeathBufferFragment(this.deathBufferFragments[i].node, i, state);
+        }
+    }
+
+    private createDeathBufferFragments(parent: any): void {
+        this.destroyDeathBufferFragments();
+        if (!parent || typeof parent.addChild !== "function") return;
+
+        const layer = new Laya.Sprite();
+        layer.name = "WPV31_ActiveFragmentBuffer";
+        layer.blendMode = "lighter";
+        layer.zOrder = 3;
+        layer.mouseEnabled = false;
+        layer.mouseThrough = true;
+        parent.addChild(layer);
+        this.deathBufferLayer = layer;
+        this.createDeathCountdownDigitSegments(layer);
+
+        const ball = this.owner as any;
+        const spawn = this.getVisualStagePoint(ball?.parent, this.startX, this.startY);
+        for (let i = 0; i < BallController.DEATH_BUFFER_FRAGMENT_COUNT; i++) {
+            const node = new Laya.Sprite();
+            node.name = "WPV31_BufferFragment_" + i;
+            node.mouseEnabled = false;
+            node.mouseThrough = true;
+            const angle = this.getDeathVisualUnit(i, 1) * Math.PI * 2;
+            const radius = 48 + this.getDeathVisualUnit(i, 2) * 64;
+            const baseX = spawn.x + Math.cos(angle) * radius;
+            const baseY = spawn.y - 44 + Math.sin(angle) * radius * 0.56;
+            const phase = this.getDeathVisualUnit(i, 3) * Math.PI * 2;
+            const restRotation = -68 + this.getDeathVisualUnit(i, 4) * 136;
+            node.x = baseX;
+            node.y = baseY;
+            node.rotation = restRotation;
+            node.visible = false;
+            node.alpha = 0;
+            node.zOrder = 2;
+            layer.addChild(node);
+            this.deathBufferFragments.push({
+                node,
+                baseX,
+                baseY,
+                orbitX: 5 + this.getDeathVisualUnit(i, 5) * 9,
+                orbitY: 4 + this.getDeathVisualUnit(i, 6) * 7,
+                phase,
+                restRotation,
+            });
+            this.paintDeathBufferFragment(node, i, 'RED');
+        }
+    }
+
+    private createDeathCountdownDigitSegments(parent: any): void {
+        if (!parent || typeof parent.addChild !== "function") return;
+        const layer = new Laya.Sprite();
+        layer.name = "WPV31D_WhiteCoreCyberDigit";
+        layer.zOrder = 1;
+        layer.mouseEnabled = false;
+        layer.mouseThrough = true;
+        layer.visible = false;
+        parent.addChild(layer);
+        this.deathCountdownDigitLayer = layer;
+
+        for (let i = 0; i < BallController.DEATH_COUNTDOWN_STRUCTURAL_SEGMENT_COUNT; i++) {
+            const segment = new Laya.Sprite();
+            segment.name = "WPV31D_StructuralDigitSegment_" + i;
+            segment.mouseEnabled = false;
+            segment.mouseThrough = true;
+            segment.visible = false;
+            layer.addChild(segment);
+            this.deathCountdownDigitSegments.push(segment);
+        }
+    }
+
+    private getDeathBufferDriftPosition(fragment: DeathBufferFragment, index: number, elapsed: number): { x: number; y: number } {
+        const seconds = Math.max(0, elapsed - BallController.DEATH_DECONSTRUCT_END_MS) * 0.001;
+        const x = fragment.baseX
+            + Math.sin(seconds * (0.82 + (index % 4) * 0.13) + fragment.phase) * fragment.orbitX
+            + Math.cos(seconds * 1.37 + fragment.phase * 0.7) * 2.5;
+        const y = fragment.baseY
+            + Math.cos(seconds * (0.7 + (index % 5) * 0.11) + fragment.phase) * fragment.orbitY
+            + Math.sin(seconds * 1.11 + fragment.phase * 1.3) * 2;
+        return { x, y };
+    }
+
+    private getDeathCountdownSegmentTemplate(digit: 3 | 2 | 1 | 0): Array<[number, number, number, number]> {
+        const segmentsByDigit: Record<3 | 2 | 1 | 0, Array<[number, number, number, number]>> = {
+            3: [
+                [-0.36, -0.5, 0.36, -0.5],
+                [-0.36, 0, 0.36, 0],
+                [-0.36, 0.5, 0.36, 0.5],
+                [0.4, -0.46, 0.4, -0.04],
+                [0.4, 0.04, 0.4, 0.46],
+            ],
+            2: [
+                [-0.36, -0.5, 0.36, -0.5],
+                [0.4, -0.44, 0.4, -0.05],
+                [-0.36, 0, 0.36, 0],
+                [-0.4, 0.05, -0.4, 0.44],
+                [-0.36, 0.5, 0.36, 0.5],
+            ],
+            1: [
+                [-0.36, -0.28, 0.05, -0.5],
+                [0.05, -0.46, 0.05, 0.46],
+                [-0.36, 0.5, 0.34, 0.5],
+            ],
+            0: [
+                [-0.36, -0.5, 0.36, -0.5],
+                [-0.36, 0.5, 0.36, 0.5],
+                [-0.4, -0.44, -0.4, -0.04],
+                [-0.4, 0.04, -0.4, 0.44],
+                [0.4, -0.44, 0.4, -0.04],
+                [0.4, 0.04, 0.4, 0.44],
+            ],
+        };
+        return segmentsByDigit[digit];
+    }
+
+    private getDeathCountdownTarget(index: number, digit: 3 | 2 | 1 | 0): { x: number; y: number; rotation: number } {
+        const segments = this.getDeathCountdownSegmentTemplate(digit);
+        const segmentIndex = index % segments.length;
+        const lane = Math.floor(index / segments.length);
+        const laneCount = Math.ceil(BallController.DEATH_BUFFER_FRAGMENT_COUNT / segments.length);
+        const t = Math.min(0.94, (lane + 0.45) / laneCount);
+        const [x0, y0, x1, y1] = segments[segmentIndex];
+        const geometry = this.getDeathCountdownGeometry();
+        const anchorX = geometry.stageWidth * 0.5;
+        const anchorY = geometry.digitCenterY;
+        return {
+            x: anchorX + (x0 + (x1 - x0) * t) * geometry.digitWidth,
+            y: anchorY + (y0 + (y1 - y0) * t) * geometry.digitHeight,
+            rotation: Math.atan2(
+                (y1 - y0) * geometry.digitHeight,
+                (x1 - x0) * geometry.digitWidth,
+            ) * 180 / Math.PI,
+        };
+    }
+
+    private drawDeathCountdownStructuralBar(graphics: any, length: number, thickness: number, color: string): void {
+        if (typeof graphics?.drawPoly === "function") {
+            const halfLength = length * 0.5;
+            const halfThickness = thickness * 0.5;
+            const cut = Math.min(thickness * 0.38, length * 0.14);
+            graphics.drawPoly(0, 0, [
+                -halfLength + cut, -halfThickness,
+                halfLength - cut, -halfThickness,
+                halfLength, -halfThickness + cut,
+                halfLength, halfThickness - cut,
+                halfLength - cut, halfThickness,
+                -halfLength + cut, halfThickness,
+                -halfLength, halfThickness - cut,
+                -halfLength, -halfThickness + cut,
+            ], color);
+        } else if (typeof graphics?.drawRect === "function") {
+            graphics.drawRect(-length * 0.5, -thickness * 0.5, length, thickness, color);
+        }
+    }
+
+    private paintDeathCountdownStructuralSegment(
+        node: any,
+        length: number,
+        thickness: number,
+        index: number,
+        state: 'RED' | 'BLUE',
+    ): void {
+        const graphics = node?.graphics;
+        if (!graphics) return;
+        graphics.clear();
+        const energy = this.getDeathCountdownPalette(state);
+        const coreHighlight = index % 3 === 0 ? "#FFFFFF" : (index % 3 === 1 ? "#F4FAFF" : "#DDEEFF");
+        this.drawDeathCountdownStructuralBar(graphics, length + thickness * 0.34, thickness, energy.outline);
+        this.drawDeathCountdownStructuralBar(graphics, length + thickness * 0.22, thickness * 0.86, energy.glow);
+        this.drawDeathCountdownStructuralBar(graphics, length + thickness * 0.1, thickness * 0.74, "#42D7FF");
+        this.drawDeathCountdownStructuralBar(graphics, length, thickness * 0.62, "#F4FAFF");
+        this.drawDeathCountdownStructuralBar(
+            graphics,
+            Math.max(thickness, length - thickness * 0.58),
+            thickness * 0.17,
+            coreHighlight,
+        );
+    }
+
+    private updateDeathCountdownStructuralDigit(elapsed: number, worldTransition: boolean): void {
+        const layer = this.deathCountdownDigitLayer;
+        if (!layer) return;
+        if (elapsed < BallController.DEATH_DECONSTRUCT_END_MS
+            || worldTransition
+            || (elapsed >= BallController.DEATH_WORLD_MATERIALIZE_START_MS
+                && elapsed < BallController.DEATH_CORE_REASSEMBLY_START_MS)) {
+            layer.visible = false;
+            return;
+        }
+
+        let digit: 3 | 2 | 1 | 0;
+        let energyState: 'RED' | 'BLUE';
+        let formation: number;
+        let visibility = 1;
+        if (elapsed >= BallController.DEATH_CORE_REASSEMBLY_START_MS) {
+            digit = 0;
+            energyState = 'BLUE';
+            const coreProgress = Math.max(0, Math.min(
+                1,
+                (elapsed - BallController.DEATH_CORE_REASSEMBLY_START_MS)
+                    / (BallController.DEATH_RECONSTRUCTION_DURATION_MS - BallController.DEATH_CORE_REASSEMBLY_START_MS),
+            ));
+            const formationProgress = Math.min(1, coreProgress / 0.34);
+            formation = 1 - Math.pow(1 - formationProgress, 3);
+            visibility = Math.min(1, coreProgress / 0.18);
+        } else {
+            energyState = 'RED';
+            const countdownElapsed = Math.min(
+                BallController.DEATH_WORLD_MATERIALIZE_START_MS - BallController.DEATH_DECONSTRUCT_END_MS - 0.001,
+                Math.max(0, elapsed - BallController.DEATH_DECONSTRUCT_END_MS),
+            );
+            const beatIndex = Math.min(2, Math.floor(countdownElapsed / BallController.DEATH_COUNTDOWN_BEAT_MS));
+            const beatProgress = (countdownElapsed - beatIndex * BallController.DEATH_COUNTDOWN_BEAT_MS)
+                / BallController.DEATH_COUNTDOWN_BEAT_MS;
+            digit = ([3, 2, 1] as const)[beatIndex];
+            formation = 1;
+            if (beatProgress < 0.3) {
+                const local = beatProgress / 0.3;
+                formation = 1 - Math.pow(1 - local, 2);
+            } else if (beatProgress > 0.72) {
+                const local = (beatProgress - 0.72) / 0.28;
+                formation = 1 - (1 - Math.pow(1 - local, 2));
+            }
+        }
+
+        const geometry = this.getDeathCountdownGeometry();
+        const templates = this.getDeathCountdownSegmentTemplate(digit);
+        const thickness = geometry.digitHeight * 0.15;
+        const repaint = this.deathCountdownDigitValue !== digit
+            || this.deathCountdownDigitEnergyState !== energyState;
+        layer.visible = true;
+        for (let i = 0; i < this.deathCountdownDigitSegments.length; i++) {
+            const node = this.deathCountdownDigitSegments[i];
+            const template = templates[i];
+            if (!template) {
+                node.visible = false;
+                continue;
+            }
+            const [x0, y0, x1, y1] = template;
+            const dx = (x1 - x0) * geometry.digitWidth;
+            const dy = (y1 - y0) * geometry.digitHeight;
+            const length = Math.max(thickness * 1.4, Math.sqrt(dx * dx + dy * dy));
+            if (repaint) this.paintDeathCountdownStructuralSegment(node, length, thickness, i, energyState);
+
+            const stagger = i * 0.035;
+            const localFormation = Math.max(0, Math.min(1, (formation - stagger) / Math.max(0.001, 1 - stagger)));
+            const lock = 1 - Math.pow(1 - localFormation, 3);
+            node.visible = true;
+            node.x = geometry.stageWidth * 0.5 + (x0 + x1) * 0.5 * geometry.digitWidth
+                + (1 - lock) * (i % 2 === 0 ? -10 - i : 10 + i);
+            node.y = geometry.digitCenterY + (y0 + y1) * 0.5 * geometry.digitHeight
+                + (1 - lock) * ((i % 3) - 1) * 7;
+            node.rotation = Math.atan2(dy, dx) * 180 / Math.PI
+                + (1 - lock) * (i % 2 === 0 ? -8 : 8);
+            node.scaleX = 0.68 + lock * 0.32;
+            node.scaleY = 0.82 + lock * 0.18;
+            node.alpha = visibility * Math.min(1, localFormation * 1.45) * (0.72 + lock * 0.28);
+        }
+        this.deathCountdownDigitValue = digit;
+        this.deathCountdownDigitEnergyState = energyState;
+    }
+
+    private updateDeathBufferFragments(elapsed: number, worldTransition: boolean = false): void {
+        this.updateDeathCountdownStructuralDigit(elapsed, worldTransition);
+        for (const fragment of this.deathBufferFragments) {
+            fragment.node.visible = false;
+            fragment.node.alpha = 0;
+        }
+    }
+
+    private destroyDeathBufferFragments(): void {
+        if (this.deathCountdownDigitLayer) this.destroyVisualNode(this.deathCountdownDigitLayer);
+        this.deathCountdownDigitLayer = null;
+        this.deathCountdownDigitSegments = [];
+        this.deathCountdownDigitValue = null;
+        this.deathCountdownDigitEnergyState = 'NONE';
+        if (this.deathBufferLayer) this.destroyVisualNode(this.deathBufferLayer);
+        this.deathBufferLayer = null;
+        this.deathBufferFragments = [];
+        this.deathCountdownColorState = 'NONE';
+    }
+
+    private createOldWorldDeconstructionVisuals(): void {
+        this.destroyDeathOldWorldVisuals();
+        this.deathPlatformFinalVisibility.clear();
+        this.deathHazardFinalVisibility.clear();
+
+        for (const platform of this.platforms) {
+            const wasVisible = platform?.visible !== false;
+            this.deathPlatformFinalVisibility.set(platform, wasVisible);
+            if (wasVisible && this.deathOldWorldVisuals.length < BallController.DEATH_OLD_WORLD_FRAGMENT_BUDGET) {
+                const parent = platform?.parent;
+                if (parent && typeof parent.addChild === "function") {
+                    const platformWidth = Math.max(1, Number(platform.width) || 1);
+                    const platformHeight = Math.max(6, Number(platform.height) || 10);
+                    for (let piece = 0; piece < 3
+                        && this.deathOldWorldVisuals.length < BallController.DEATH_OLD_WORLD_FRAGMENT_BUDGET; piece++) {
+                        const fragment = new Laya.Sprite();
+                        fragment.name = "WPV31_OldWorldFragment_" + String(platform?.name || "Platform") + "_" + piece;
+                        const fragmentWidth = Math.max(8, Math.min(48, platformWidth * (0.2 + piece * 0.035)));
+                        const fragmentHeight = Math.max(2, Math.min(6, platformHeight * (0.32 + piece * 0.08)));
+                        const startX = (Number(platform.x) || 0)
+                            + Math.max(0, platformWidth - fragmentWidth) * (0.08 + piece * 0.42);
+                        const startY = (Number(platform.y) || 0) + platformHeight * (0.18 + piece * 0.22);
+                        fragment.x = startX;
+                        fragment.y = startY;
+                        fragment.zOrder = (Number(platform.zOrder) || 0) + 4;
+                        fragment.mouseEnabled = false;
+                        fragment.mouseThrough = true;
+                        fragment.blendMode = "lighter";
+                        const color = piece % 2 === 0 ? "#35E9FF" : "#8B6CFF";
+                        if (typeof fragment.graphics?.drawPoly === "function") {
+                            fragment.graphics.drawPoly(
+                                0,
+                                0,
+                                [0, 0, fragmentWidth, fragmentHeight * 0.16, fragmentWidth * 0.83, fragmentHeight, fragmentWidth * 0.08, fragmentHeight * 0.78],
+                                color,
+                            );
+                        } else if (typeof fragment.graphics?.drawRect === "function") {
+                            fragment.graphics.drawRect(0, 0, fragmentWidth, fragmentHeight, color);
+                        }
+                        parent.addChild(fragment);
+                        const direction = piece - 1;
+                        this.deathOldWorldVisuals.push({
+                            node: fragment,
+                            startX,
+                            startY,
+                            driftX: direction * (10 + this.deathOldWorldVisuals.length % 5 * 2),
+                            driftY: 8 + piece * 5 + this.deathOldWorldVisuals.length % 4,
+                            spin: direction === 0 ? 7 : direction * (11 + piece * 3),
+                        });
+                    }
+                }
+            }
+            if (platform) platform.visible = false;
+        }
+
+        for (const spike of this.spikes) {
+            this.deathHazardFinalVisibility.set(spike, spike?.visible !== false);
+            if (spike) spike.visible = false;
+        }
+        if (this.disappearHighlightBar) this.disappearHighlightBar.visible = false;
+    }
+
+    private updateDeathDeconstruction(elapsed: number): void {
+        const progress = Math.max(0, Math.min(1, elapsed / BallController.DEATH_DECONSTRUCT_END_MS));
+        if (this.deathReconstructionAmbience) {
+            this.deathReconstructionAmbience.alpha = 0.16 + progress * 0.84;
+        }
+        this.updateDeathBufferFragments(elapsed);
+        this.updateDeathReticle(elapsed);
+        const eased = 1 - Math.pow(1 - progress, 2);
+        for (let i = 0; i < this.deathOldWorldVisuals.length; i++) {
+            const fragment = this.deathOldWorldVisuals[i];
+            fragment.node.x = fragment.startX + fragment.driftX * eased;
+            fragment.node.y = fragment.startY + fragment.driftY * eased;
+            fragment.node.rotation = fragment.spin * eased;
+            fragment.node.alpha = Math.max(0, 1 - progress * (0.88 + (i % 3) * 0.04));
+        }
+
+        const ball = this.owner as any;
+        if (ball) ball.visible = true;
+        if (this.ballVisualRoot) {
+            this.ballVisualRoot.visible = true;
+            this.ballVisualRoot.alpha = Math.max(0, 1 - progress);
+            const pulse = 1 + Math.sin(progress * Math.PI) * 0.16;
+            this.ballVisualRoot.scaleX = this.ballVisualScaleX * pulse;
+            this.ballVisualRoot.scaleY = this.ballVisualScaleY * pulse;
+        }
+    }
+
+    private beginDeathReassemblyBuffer(): void {
+        if (this.deathLogicalRespawnDone) return;
+        this.deathLogicalRespawnDone = true;
+        this.respawn();
+
+        const ball = this.owner as any;
+        if (ball) ball.visible = false;
+        if (this.ballVisualRoot) {
+            this.ballVisualRoot.visible = false;
+            this.ballVisualRoot.alpha = 0;
+        }
+        this.destroyDeathOldWorldVisuals();
+        this.suppressWorldForDeathReconstruction();
+        this.deathReconstructionPhase = 'BUFFERING';
+    }
+
+    private suppressWorldForDeathReconstruction(): void {
+        for (const platform of this.platforms) {
+            if (platform) platform.visible = false;
+        }
+        for (const spike of this.spikes) {
+            if (spike) spike.visible = false;
+        }
+        if (this.disappearHighlightBar) this.disappearHighlightBar.visible = false;
+    }
+
+    private updateDeathReassemblyBuffer(elapsed: number): void {
+        if (!this.deathReconstructionAmbience) return;
+        this.deathReconstructionAmbience.alpha = 1;
+        this.updateDeathBufferFragments(elapsed);
+        this.updateDeathReticle(elapsed);
+    }
+
+    private beginDeathWorldMaterialization(): void {
+        if (this.deathWorldGenerationDone) return;
+        this.deathWorldGenerationDone = true;
+
+        // This synchronous one-shot owns the reroll and the immediate visual suppression.
+        this.randomizePlatforms();
+        this.randomizeHazards();
+
+        this.deathPlatformFinalVisibility.clear();
+        const canonicalGround = this.deathGroundCanonicalState?.platform ?? null;
+        for (const platform of this.platforms) {
+            const finalVisibility = platform === canonicalGround
+                ? this.deathGroundCanonicalState?.visible !== false
+                : platform?.visible !== false;
+            this.deathPlatformFinalVisibility.set(platform, finalVisibility);
+            if (platform) platform.visible = false;
+        }
+        this.deathHazardFinalVisibility.clear();
+        for (const spike of this.spikes) {
+            this.deathHazardFinalVisibility.set(spike, spike?.visible !== false);
+            if (spike) spike.visible = false;
+        }
+
+        this.createDeathPlatformMaterializationVisuals();
+        this.deathReconstructionPhase = 'WORLD_MATERIALIZING';
+    }
+
+    private getDeathMaterializationPlatforms(): any[] {
+        const ground = this.platforms.find((platform: any) => platform?.name === "Ground") ?? null;
+        const gameplayPlatforms = this.getSortedGamePlatforms();
+        return ground ? [ground, ...gameplayPlatforms] : gameplayPlatforms;
+    }
+
+    private createDeathPlatformMaterializationVisuals(): void {
+        this.destroyDeathPlatformVisuals();
+        const sorted = this.getDeathMaterializationPlatforms();
+        const ranked = sorted
+            .map((platform: any, index: number) => ({
+                platform,
+                index,
+                key: this.getDeathPlatformRevealKey(index),
+            }))
+            .sort((a, b) => a.key - b.key || a.index - b.index);
+        const rankByPlatform = new Map<any, number>();
+        ranked.forEach((entry, rank) => rankByPlatform.set(entry.platform, rank));
+
+        for (const platform of sorted) {
+            const parent = platform?.parent;
+            if (!parent || typeof parent.addChild !== "function") continue;
+            const platformIndex = sorted.indexOf(platform);
+            const duplicates: DeathPlatformDuplicate[] = [];
+            for (let duplicateIndex = 0;
+                duplicateIndex < BallController.DEATH_PLATFORM_DUPLICATE_COUNT;
+                duplicateIndex++) {
+                const proxy = new Laya.Sprite();
+                proxy.name = "WPV31_PlatformDuplicate_" + String(platform?.name || "Platform") + "_" + duplicateIndex;
+                proxy.width = Math.max(1, Number(platform.width) || 1);
+                proxy.height = Math.max(6, Number(platform.height) || 10);
+                proxy.zOrder = (Number(platform.zOrder) || 0) + 4 + duplicateIndex;
+                proxy.mouseEnabled = false;
+                proxy.mouseThrough = true;
+                proxy.blendMode = "lighter";
+                const direction = duplicateIndex === 0 ? -1 : 1;
+                const offsetX = direction * (6 + this.getDeathVisualUnit(platformIndex, 20 + duplicateIndex) * 5);
+                const offsetY = direction * (2.5 + this.getDeathVisualUnit(platformIndex, 24 + duplicateIndex) * 3.5);
+                const phase = this.getDeathVisualUnit(platformIndex, 28 + duplicateIndex) * Math.PI * 2;
+                proxy.x = (Number(platform.x) || 0) + offsetX;
+                proxy.y = (Number(platform.y) || 0) + offsetY;
+                parent.addChild(proxy);
+                this.paintDeathPlatformMaterializationVisual(proxy, 0, duplicateIndex);
+                duplicates.push({ node: proxy, duplicateIndex, offsetX, offsetY, phase });
+            }
+            this.deathPlatformVisuals.push({
+                platform,
+                duplicates,
+                rank: rankByPlatform.get(platform) ?? 0,
+            });
+        }
+    }
+
+    private getDeathPlatformRevealKey(index: number): number {
+        let value = Math.imul(index + 1, 0x45d9f3b) ^ Math.imul(this.currentLevel + 17, 0x27d4eb2d);
+        value = Math.imul(value ^ (value >>> 16), 0x45d9f3b);
+        return (value ^ (value >>> 16)) >>> 0;
+    }
+
+    private getDeathPlatformMaterializationProgress(
+        visual: { rank: number },
+        elapsed: number,
+    ): number {
+        const count = Math.max(1, this.deathPlatformVisuals.length);
+        const stagger = count <= 1 ? 0 : visual.rank * 90 / (count - 1);
+        const localElapsed = elapsed - BallController.DEATH_WORLD_MATERIALIZE_START_MS - stagger;
+        return Math.max(0, Math.min(1, localElapsed / 330));
+    }
+
+    private updateDeathWorldMaterialization(elapsed: number): void {
+        const phaseProgress = Math.max(0, Math.min(
+            1,
+            (elapsed - BallController.DEATH_WORLD_MATERIALIZE_START_MS)
+                / (BallController.DEATH_CORE_REASSEMBLY_START_MS - BallController.DEATH_WORLD_MATERIALIZE_START_MS),
+        ));
+        if (this.deathReconstructionAmbience) {
+            this.deathReconstructionAmbience.alpha = 1 - phaseProgress * 0.26;
+        }
+        this.updateDeathBufferFragments(elapsed, true);
+        this.updateDeathReticle(elapsed);
+
+        for (const visual of this.deathPlatformVisuals) {
+            const progress = this.getDeathPlatformMaterializationProgress(visual, elapsed);
+            const eased = 1 - Math.pow(1 - progress, 3);
+            const remaining = 1 - eased;
+            for (const duplicate of visual.duplicates) {
+                const jitterScale = remaining * (3.2 + duplicate.duplicateIndex * 1.4);
+                duplicate.node.x = (Number(visual.platform.x) || 0)
+                    + duplicate.offsetX * remaining
+                    + Math.sin(elapsed * (0.034 + duplicate.duplicateIndex * 0.006) + duplicate.phase) * jitterScale;
+                duplicate.node.y = (Number(visual.platform.y) || 0)
+                    + duplicate.offsetY * remaining
+                    + Math.cos(elapsed * (0.03 + duplicate.duplicateIndex * 0.005) + duplicate.phase) * jitterScale * 0.68;
+                duplicate.node.rotation = (duplicate.duplicateIndex === 0 ? -2.4 : 2.4) * remaining
+                    + Math.sin(elapsed * 0.026 + duplicate.phase) * remaining;
+                this.paintDeathPlatformMaterializationVisual(
+                    duplicate.node,
+                    progress,
+                    duplicate.duplicateIndex,
+                );
+            }
+            visual.platform.visible = progress >= BallController.DEATH_PLATFORM_LOCK_THRESHOLD
+                && this.deathPlatformFinalVisibility.get(visual.platform) !== false;
+        }
+
+        for (const spike of this.spikes) {
+            const shouldExist = this.deathHazardFinalVisibility.get(spike) === true;
+            const owner = this.deathHazardOwnerPlatforms.get(spike);
+            const ownerVisual = this.deathPlatformVisuals.find((visual) => visual.platform === owner);
+            const ownerProgress = ownerVisual
+                ? this.getDeathPlatformMaterializationProgress(ownerVisual, elapsed)
+                : 0;
+            spike.visible = shouldExist
+                && !!ownerVisual
+                && ownerProgress >= BallController.DEATH_PLATFORM_LOCK_THRESHOLD;
+        }
+    }
+
+    private paintDeathPlatformMaterializationVisual(node: any, progress: number, duplicateIndex: number): void {
+        const graphics = node?.graphics;
+        if (!graphics) return;
+        const width = Math.max(1, Number(node.width) || 1);
+        const height = Math.max(6, Number(node.height) || 8);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        graphics.clear();
+        node.visible = progress < 1;
+        const convergenceFade = Math.max(0, Math.min(1, (1 - progress) / 0.26));
+        node.alpha = (0.18 + eased * 0.34) * convergenceFade;
+        const color = duplicateIndex === 0 ? "#42F5FF" : "#8B6CFF";
+
+        if (typeof graphics.drawLine === "function") {
+            const sliceCount = 4;
+            for (let slice = 0; slice < sliceCount; slice++) {
+                const x0 = width * slice / sliceCount + (slice % 2 === 0 ? 0 : 2 * (1 - eased));
+                const x1 = width * (slice + 0.72 + eased * 0.22) / sliceCount;
+                const y = height * (0.25 + (slice % 2) * 0.42);
+                graphics.drawLine(x0, y, Math.min(width, x1), y, color, slice === 0 ? 2 : 1);
+            }
+            graphics.drawLine(0, height * 0.5, width, height * 0.5, color, 1);
+        } else if (typeof graphics.drawRect === "function") {
+            graphics.drawRect(0, height * 0.2, width, Math.max(2, height * 0.6), color);
+        }
+    }
+
+    private finishDeathWorldMaterialization(): void {
+        for (const [platform, visible] of this.deathPlatformFinalVisibility) {
+            if (platform) platform.visible = visible;
+        }
+        for (const [spike, visible] of this.deathHazardFinalVisibility) {
+            if (spike) spike.visible = visible;
+        }
+        this.restoreDeathGroundCanonicalState();
+        this.destroyDeathPlatformVisuals();
+    }
+
+    private beginDeathCoreReassembly(): void {
+        if (this.deathCoreReassemblyStarted) return;
+        this.deathCoreReassemblyStarted = true;
+        this.finishDeathWorldMaterialization();
+        this.deathReconstructionPhase = 'CORE_REASSEMBLING';
+
+        const ball = this.owner as any;
+        this.centerX = this.startX;
+        this.centerY = this.startY;
+        this.previousY = this.startY;
+        if (ball) {
+            this.syncBallSprite(ball);
+            ball.visible = true;
+        }
+        if (this.ballVisualRoot) {
+            this.ballVisualRoot.visible = true;
+            this.ballVisualRoot.alpha = 0;
+        }
+        if (this.ballAura) this.ballAura.visible = false;
+        if (this.ballShell) this.ballShell.visible = false;
+        if (this.ballCore) this.ballCore.visible = false;
+        if (this.ballCircuits) this.ballCircuits.visible = false;
+        this.createDeathBallReassemblyShards();
+    }
+
+    private createDeathBallReassemblyShards(): void {
+        this.destroyDeathBallReassembly();
+        const ball = this.owner as any;
+        const parent = ball?.parent;
+        if (!parent || typeof parent.addChild !== "function") return;
+
+        const layer = new Laya.Sprite();
+        layer.name = "WPV3_CyberCoreReassembly";
+        layer.x = this.startX;
+        layer.y = this.startY;
+        layer.zOrder = (Number(ball.zOrder) || 5) + 1;
+        layer.mouseEnabled = false;
+        layer.mouseThrough = true;
+        layer.blendMode = "lighter";
+        parent.addChild(layer);
+        this.deathBallReassemblyLayer = layer;
+
+        const colors = ["#42F5FF", "#8B6CFF", "#FFFFFF", "#35E9FF"];
+        for (let i = 0; i < BallController.DEATH_BALL_SHARD_COUNT; i++) {
+            const shard = new Laya.Sprite();
+            shard.name = "WPV3_CoreShard_" + i;
+            shard.mouseEnabled = false;
+            const size = 2.4 + (i % 3) * 0.7;
+            const color = colors[i % colors.length];
+            if (typeof shard.graphics?.drawPoly === "function") {
+                shard.graphics.drawPoly(
+                    -size,
+                    -size,
+                    [0, 0, size * 2.2, size * 0.35, size * 1.35, size * 2.1, size * 0.2, size * 1.45],
+                    color,
+                );
+            } else if (typeof shard.graphics?.drawRect === "function") {
+                shard.graphics.drawRect(-size * 0.5, -size * 0.5, size, size, color);
+            }
+            const angle = i * Math.PI * 2 / BallController.DEATH_BALL_SHARD_COUNT + (i % 2) * 0.17;
+            const distance = 23 + (i % 3) * 7;
+            const startX = Math.cos(angle) * distance;
+            const startY = Math.sin(angle) * distance;
+            shard.x = startX;
+            shard.y = startY;
+            layer.addChild(shard);
+            this.deathBallShards.push({
+                node: shard,
+                startX,
+                startY,
+                spin: i % 2 === 0 ? 150 + i * 11 : -155 - i * 9,
+            });
+        }
+    }
+
+    private updateDeathCoreReassembly(elapsed: number): void {
+        const progress = Math.max(0, Math.min(
+            1,
+            (elapsed - BallController.DEATH_CORE_REASSEMBLY_START_MS)
+                / (BallController.DEATH_RECONSTRUCTION_DURATION_MS - BallController.DEATH_CORE_REASSEMBLY_START_MS),
+        ));
+        const eased = 1 - Math.pow(1 - progress, 2);
+
+        if (this.deathReconstructionAmbience) {
+            this.deathReconstructionAmbience.alpha = 1;
+            const dim = typeof this.deathReconstructionAmbience.getChildByName === "function"
+                ? this.deathReconstructionAmbience.getChildByName("WPV3_GlobalDim")
+                : null;
+            if (dim) dim.alpha = 0.53 * (1 - eased);
+        }
+        this.updateDeathBufferFragments(elapsed);
+        this.updateDeathReticle(elapsed);
+        for (const shard of this.deathBallShards) {
+            const remaining = 1 - eased;
+            shard.node.x = shard.startX * remaining;
+            shard.node.y = shard.startY * remaining;
+            shard.node.rotation = shard.spin * progress;
+            shard.node.alpha = Math.max(0, 1 - Math.max(0, progress - 0.58) / 0.34);
+        }
+
+        if (this.ballVisualRoot) {
+            this.ballVisualRoot.visible = true;
+            this.ballVisualRoot.alpha = Math.max(0, Math.min(1, (progress - 0.2) / 0.42));
+            const scale = 0.78 + eased * 0.22;
+            this.ballVisualRoot.scaleX = scale;
+            this.ballVisualRoot.scaleY = scale;
+        }
+        if (this.ballCore) {
+            this.ballCore.visible = progress >= 0.28;
+            this.ballCore.alpha = Math.max(0, Math.min(1, (progress - 0.28) / 0.2));
+        }
+        if (this.ballShell) {
+            this.ballShell.visible = progress >= 0.48;
+            this.ballShell.alpha = Math.max(0, Math.min(1, (progress - 0.48) / 0.24));
+        }
+        if (this.ballCircuits) {
+            this.ballCircuits.visible = progress >= 0.66;
+            this.ballCircuits.alpha = Math.max(0, Math.min(1, (progress - 0.66) / 0.2));
+        }
+        if (this.ballAura) {
+            this.ballAura.visible = progress >= 0.78;
+            this.ballAura.alpha = Math.max(0, Math.min(0.28, (progress - 0.78) / 0.22 * 0.28));
+        }
+    }
+
+    private updateDeathReconstruction(now: number = this.getWpBNow()): void {
+        if (this.deathReconstructionPhase === 'IDLE') return;
+        const elapsed = Math.max(0, now - this.deathReconstructionStartedAt);
+
+        if (elapsed >= BallController.DEATH_DECONSTRUCT_END_MS && !this.deathLogicalRespawnDone) {
+            this.beginDeathReassemblyBuffer();
+        }
+        if (elapsed >= BallController.DEATH_WORLD_MATERIALIZE_START_MS && !this.deathWorldGenerationDone) {
+            this.beginDeathWorldMaterialization();
+        }
+        if (elapsed >= BallController.DEATH_CORE_REASSEMBLY_START_MS && !this.deathCoreReassemblyStarted) {
+            this.beginDeathCoreReassembly();
+        }
+        if (elapsed >= BallController.DEATH_RECONSTRUCTION_DURATION_MS) {
+            this.completeDeathReconstruction();
+            return;
+        }
+
+        switch (this.deathReconstructionPhase) {
+            case 'DECONSTRUCTING':
+                this.updateDeathDeconstruction(elapsed);
+                break;
+            case 'BUFFERING':
+                this.updateDeathReassemblyBuffer(elapsed);
+                break;
+            case 'WORLD_MATERIALIZING':
+                this.updateDeathWorldMaterialization(elapsed);
+                break;
+            case 'CORE_REASSEMBLING':
+                this.updateDeathCoreReassembly(elapsed);
+                break;
+        }
+    }
+
+    private completeDeathReconstruction(): void {
+        this.finishDeathWorldMaterialization();
+        this.restoreCanonicalBallAfterReconstruction();
+        this.clearDeathReconstruction();
+    }
+
+    private restoreCanonicalBallAfterReconstruction(): void {
+        const ball = this.owner as any;
+        if (ball) {
+            ball.visible = true;
+            this.centerX = this.startX;
+            this.centerY = this.startY;
+            this.previousY = this.startY;
+            this.syncBallSprite(ball);
+        }
+        this.vx = 0;
+        this.vy = 0;
+        this.ballVisualScaleX = 1;
+        this.ballVisualScaleY = 1;
+        if (this.ballVisualRoot) {
+            this.ballVisualRoot.visible = true;
+            this.ballVisualRoot.alpha = 1;
+            this.ballVisualRoot.scaleX = 1;
+            this.ballVisualRoot.scaleY = 1;
+        }
+        if (this.ballAura) {
+            this.ballAura.visible = true;
+            this.ballAura.alpha = 0.22;
+        }
+        if (this.ballShell) {
+            this.ballShell.visible = true;
+            this.ballShell.alpha = 1;
+        }
+        if (this.ballCore) {
+            this.ballCore.visible = true;
+            this.ballCore.alpha = 1;
+        }
+        if (this.ballCircuits) {
+            this.ballCircuits.visible = true;
+            this.ballCircuits.alpha = 1;
+        }
+        this.ballTrailHistory = [];
+        for (const trail of this.ballTrailNodes) {
+            trail.visible = true;
+            trail.alpha = 0;
+        }
+    }
+
+    private destroyDeathOldWorldVisuals(): void {
+        for (const fragment of this.deathOldWorldVisuals) {
+            this.destroyVisualNode(fragment.node);
+        }
+        this.deathOldWorldVisuals = [];
+    }
+
+    private destroyDeathPlatformVisuals(): void {
+        for (const visual of this.deathPlatformVisuals) {
+            for (const duplicate of visual.duplicates) {
+                this.destroyVisualNode(duplicate.node);
+            }
+        }
+        this.deathPlatformVisuals = [];
+    }
+
+    private destroyDeathBallReassembly(): void {
+        if (this.deathBallReassemblyLayer) {
+            this.destroyVisualNode(this.deathBallReassemblyLayer);
+        }
+        this.deathBallReassemblyLayer = null;
+        this.deathBallShards = [];
+    }
+
+    private clearDeathReconstruction(): void {
+        const wasActive = this.deathReconstructionPhase !== 'IDLE'
+            || this.deathReconstructionUntilMs > 0
+            || !!this.deathReconstructionAmbience;
+
+        this.destroyDeathBufferFragments();
+        this.destroyDeathReticle();
+        if (this.deathReconstructionAmbience) {
+            this.destroyVisualNode(this.deathReconstructionAmbience);
+        }
+        this.deathReconstructionAmbience = null;
+        this.destroyDeathOldWorldVisuals();
+        this.destroyDeathPlatformVisuals();
+        this.destroyDeathBallReassembly();
+
+        for (const [platform, visible] of this.deathPlatformFinalVisibility) {
+            if (platform) platform.visible = visible;
+        }
+        for (const [spike, visible] of this.deathHazardFinalVisibility) {
+            if (spike) spike.visible = visible;
+        }
+        // Ground restoration wins over any temporary visibility map sampled during reconstruction.
+        this.restoreDeathGroundCanonicalState();
+        if (wasActive) {
+            const ball = this.owner as any;
+            if (ball) ball.visible = this.deathBallWasVisible;
+            if (this.ballVisualRoot) {
+                this.ballVisualRoot.visible = true;
+                this.ballVisualRoot.alpha = 1;
+                this.ballVisualRoot.scaleX = this.ballVisualScaleX;
+                this.ballVisualRoot.scaleY = this.ballVisualScaleY;
+            }
+            if (this.ballAura) this.ballAura.visible = true;
+            if (this.ballShell) this.ballShell.visible = true;
+            if (this.ballCore) this.ballCore.visible = true;
+            if (this.ballCircuits) this.ballCircuits.visible = true;
+            for (const trail of this.ballTrailNodes) {
+                trail.visible = true;
+            }
+        }
+
+        this.deathPlatformFinalVisibility.clear();
+        this.deathHazardFinalVisibility.clear();
+        this.deathHazardOwnerPlatforms.clear();
+        this.deathGroundCanonicalState = null;
+        this.deathReconstructionPhase = 'IDLE';
+        this.deathReconstructionStartedAt = 0;
+        this.deathReconstructionUntilMs = 0;
+        this.deathLogicalRespawnDone = false;
+        this.deathWorldGenerationDone = false;
+        this.deathCoreReassemblyStarted = false;
+        this.deathBallWasVisible = true;
+    }
+    private captureFatalVisualPosition(): void {
+        const ball = this.owner as any;
+        if (!ball) return;
+        ball.x = this.centerX;
+        ball.y = this.centerY;
+    }
+
+    // Normal death enters the locked V3 world reconstruction lifecycle.
     private handleDeath(): void {
         if (this.isHandlingDeath) return;
+        if (this.deathReconstructionPhase !== 'IDLE') return;
         if (ScoreManager.instance.isWon()) return;
 
         this.isHandlingDeath = true;
+        // This is V3 death-visual initialization, not ordinary post-death gameplay sync.
+        this.captureFatalVisualPosition();
         SfxManager.playDeath();
         this.startDeathFeedback();
         this.triggerDeathHaptics();
 
         try {
-            this.randomizePlatforms();
-            this.randomizeHazards();
-            this.respawn();
+            this.startDeathReconstruction();
         } finally {
             this.isHandlingDeath = false;
         }
@@ -978,10 +2529,10 @@ export default class BallController extends Laya.Script {
 
     private startDeathFeedback(): void {
         this.clearDeathFeedback();
-        const deathPoint = this.getVisualStagePoint(this.owner as any, 0, 0);
+        const ball = this.owner as any;
         this.startScreenShake();
         this.showDeathFlash();
-        this.spawnDeathParticles(deathPoint.x, deathPoint.y);
+        this.spawnDeathFragments(Number(ball?.x) || this.centerX, Number(ball?.y) || this.centerY);
     }
 
     private startScreenShake(): void {
@@ -1064,79 +2615,84 @@ export default class BallController extends Laya.Script {
         this.deathFlashStartedAt = 0;
     }
 
-    private spawnDeathParticles(stageX: number, stageY: number): void {
-        this.removeDeathParticles();
-        if (!Laya.stage) return;
+    private spawnDeathFragments(worldX: number, worldY: number): void {
+        this.removeDeathFragments();
+        const ball = this.owner as any;
+        const parent = ball?.parent;
+        if (!parent || typeof parent.addChild !== "function") return;
 
         const layer = new Laya.Sprite();
-        layer.name = "WPB_DeathParticles";
-        layer.zOrder = 9991;
+        layer.name = "WPV3_DeathCoreFragments";
+        layer.zOrder = (Number(ball.zOrder) || 5) + 2;
         layer.mouseEnabled = false;
         layer.mouseThrough = true;
-        Laya.stage.addChild(layer);
+        parent.addChild(layer);
 
-        this.deathParticleLayer = layer;
-        this.deathParticleStartedAt = this.getWpBNow();
-        this.deathParticleOriginX = stageX;
-        this.deathParticleOriginY = stageY;
-        this.deathParticles = [];
+        this.deathFragmentLayer = layer;
+        this.deathFragmentStartedAt = this.getWpBNow();
+        this.deathFragmentOriginX = worldX;
+        this.deathFragmentOriginY = worldY;
+        this.deathFragments = [];
 
-        const particleCount = 14;
-        const colors = ["#42F5FF", "#9B6CFF", "#FF3B7C", "#D65CFF"];
-        for (let i = 0; i < particleCount; i++) {
-            const particle = new Laya.Sprite();
-            particle.name = "WPB_DeathFragment_" + i;
-            particle.mouseEnabled = false;
-            const size = 2 + (i % 3);
+        const colors = ["#42F5FF", "#9B6CFF", "#FFFFFF", "#35E9FF"];
+        for (let i = 0; i < BallController.DEATH_BALL_SHARD_COUNT; i++) {
+            const fragment = new Laya.Sprite();
+            fragment.name = "WPV3_DeathCoreFragment_" + i;
+            fragment.mouseEnabled = false;
+            const size = 2.3 + (i % 3) * 0.8;
             const color = colors[i % colors.length];
-            if (typeof particle.graphics?.drawPoly === "function") {
-                particle.graphics.drawPoly(-size, -size, [0, 0, size * 2, size * 0.4, size * 1.4, size * 2, size * 0.2, size * 1.5], color);
-            } else if (typeof particle.graphics?.drawRect === "function") {
-                particle.graphics.drawRect(-size * 0.5, -size * 0.5, size, size, color);
+            if (typeof fragment.graphics?.drawPoly === "function") {
+                fragment.graphics.drawPoly(
+                    -size,
+                    -size,
+                    [0, 0, size * 2.2, size * 0.35, size * 1.35, size * 2.1, size * 0.2, size * 1.45],
+                    color,
+                );
+            } else if (typeof fragment.graphics?.drawRect === "function") {
+                fragment.graphics.drawRect(-size * 0.5, -size * 0.5, size, size, color);
             }
-            particle.x = stageX;
-            particle.y = stageY;
-            layer.addChild(particle);
+            fragment.x = worldX;
+            fragment.y = worldY;
+            layer.addChild(fragment);
 
-            const angle = i * Math.PI * 2 / particleCount + (i % 3) * 0.19;
-            const speed = 72 + (i % 5) * 18;
-            this.deathParticles.push({
-                node: particle,
+            const angle = i * Math.PI * 2 / BallController.DEATH_BALL_SHARD_COUNT + (i % 2) * 0.16;
+            const speed = 58 + (i % 4) * 14;
+            this.deathFragments.push({
+                node: fragment,
                 vx: Math.cos(angle) * speed,
-                vy: Math.sin(angle) * speed - 28,
-                spin: i % 2 === 0 ? 210 + i * 9 : -210 - i * 7,
+                vy: Math.sin(angle) * speed,
+                spin: i % 2 === 0 ? 190 + i * 9 : -195 - i * 7,
             });
         }
     }
 
-    private updateDeathParticles(now: number): void {
-        if (!this.deathParticleLayer) return;
+    private updateDeathFragments(now: number): void {
+        if (!this.deathFragmentLayer) return;
 
-        const elapsedMs = Math.max(0, now - this.deathParticleStartedAt);
-        if (elapsedMs >= 420) {
-            this.removeDeathParticles();
+        const elapsedMs = Math.max(0, now - this.deathFragmentStartedAt);
+        if (elapsedMs >= BallController.DEATH_DECONSTRUCT_END_MS) {
+            this.removeDeathFragments();
             return;
         }
 
         const elapsed = elapsedMs / 1000;
-        const life = 1 - elapsedMs / 420;
-        for (const particle of this.deathParticles) {
-            particle.node.x = this.deathParticleOriginX + particle.vx * elapsed;
-            particle.node.y = this.deathParticleOriginY + particle.vy * elapsed + 120 * elapsed * elapsed;
-            particle.node.rotation = particle.spin * elapsed;
-            particle.node.alpha = life;
+        const life = 1 - elapsedMs / BallController.DEATH_DECONSTRUCT_END_MS;
+        for (const fragment of this.deathFragments) {
+            fragment.node.x = this.deathFragmentOriginX + fragment.vx * elapsed;
+            fragment.node.y = this.deathFragmentOriginY + fragment.vy * elapsed;
+            fragment.node.rotation = fragment.spin * elapsed;
+            fragment.node.alpha = life;
         }
     }
 
-    private removeDeathParticles(): void {
-        if (this.deathParticleLayer) {
-            this.destroyVisualNode(this.deathParticleLayer);
+    private removeDeathFragments(): void {
+        if (this.deathFragmentLayer) {
+            this.destroyVisualNode(this.deathFragmentLayer);
         }
-        this.deathParticleLayer = null;
-        this.deathParticleStartedAt = 0;
-        this.deathParticles = [];
+        this.deathFragmentLayer = null;
+        this.deathFragmentStartedAt = 0;
+        this.deathFragments = [];
     }
-
     private triggerDeathHaptics(): void {
         try {
             const browserGlobal: any = typeof globalThis !== "undefined" ? globalThis : null;
@@ -1153,13 +2709,13 @@ export default class BallController extends Laya.Script {
         const now = this.getWpBNow();
         this.updateScreenShake(now);
         this.updateDeathFlash(now);
-        this.updateDeathParticles(now);
+        this.updateDeathFragments(now);
     }
 
     private clearDeathFeedback(): void {
         this.stopScreenShake();
         this.removeDeathFlash();
-        this.removeDeathParticles();
+        this.removeDeathFragments();
     }
 
     private getWpBNow(): number {
@@ -1262,6 +2818,7 @@ export default class BallController extends Laya.Script {
     // 胜利后按 R 重开本局，并切换到下一关的随机平台布局
     private restartGame(): void {
         console.log("Restart game");
+        this.clearDeathReconstruction();
         this.clearDeathFeedback();
 
         this.currentLevel++;
@@ -1470,6 +3027,7 @@ export default class BallController extends Laya.Script {
     // Level 4 尖刺随机化：只放在非移动、非消失的 Platform_1~Platform_5 上。
     private randomizeHazards(): void {
         this.createHazardsIfNeeded();
+        this.deathHazardOwnerPlatforms.clear();
 
         if (this.currentLevel !== 4) {
             for (const spike of this.spikes) {
@@ -1537,6 +3095,8 @@ export default class BallController extends Laya.Script {
         spike.width = spikeWidth;
         spike.height = spikeHeight;
         spike.zOrder = (target.zOrder || 0) + 1;
+        // Record the exact placement relationship for V3 visual reveal ownership.
+        this.deathHazardOwnerPlatforms.set(spike, target);
         spike.visible = true;
         this.paintSpikeVisual(spike);
     }
@@ -2848,9 +4408,11 @@ export default class BallController extends Laya.Script {
         this.updateBallVisualEffects(pulse);
         this.updateBoundaryVisuals(pulse);
         this.updateDeathFeedback();
+        this.updateDeathReconstruction();
     }
 
     onDestroy(): void {
+        this.clearDeathReconstruction();
         this.clearDeathFeedback();
         this.clearDisappearRecoveryStates();
         this.resetPlatformLandingImpacts();
@@ -2877,4 +4439,28 @@ export default class BallController extends Laya.Script {
         this.ballEnergyRenderedProgress = -1;
         this.boundaryVisuals = [];
     }
+}
+
+type DeathReticleTemplateId = 'TEMPLATE_A' | 'TEMPLATE_B' | 'TEMPLATE_C' | 'TEMPLATE_D' | 'TEMPLATE_E' | 'TEMPLATE_F' | 'TEMPLATE_G' | 'TEMPLATE_H' | 'TEMPLATE_I' | 'TEMPLATE_J';
+type DeathReticleAnimation = 'CORNER_LOCK' | 'SIDE_DEPLOY' | 'DUAL_ALIGN' | 'SEQUENTIAL_LIGHT' | 'VERTICAL_CONVERGE' | 'FRAGMENT_LOCK';
+type DeathReticleTone = 'PRIMARY' | 'ENERGY' | 'SOFT' | 'DARK';
+
+interface DeathReticlePartTemplate {
+    x: number;
+    y: number;
+    length: number;
+    thickness: number;
+    rotation: number;
+    tone: DeathReticleTone;
+}
+
+interface DeathReticleTemplate {
+    id: DeathReticleTemplateId;
+    animation: DeathReticleAnimation;
+    parts: DeathReticlePartTemplate[];
+}
+
+interface DeathReticlePartVisual {
+    node: any;
+    template: DeathReticlePartTemplate;
 }
