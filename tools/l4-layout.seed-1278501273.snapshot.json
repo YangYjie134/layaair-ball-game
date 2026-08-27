@@ -3,44 +3,44 @@
   "platforms": [
     {
       "name": "Platform_1",
-      "x": 365,
+      "x": 366,
       "y": 620,
       "moving": null,
       "disappear": false
     },
     {
       "name": "Platform_2",
-      "x": 514,
+      "x": 666,
       "y": 504,
       "moving": {
         "speed": 1.5,
-        "rangeMin": 214,
-        "rangeMax": 814,
+        "rangeMin": 366,
+        "rangeMax": 966,
         "direction": 1
       },
       "disappear": true
     },
     {
       "name": "Platform_3",
-      "x": 606,
+      "x": 948,
       "y": 377,
       "moving": null,
       "disappear": false
     },
     {
       "name": "Platform_4",
-      "x": 903,
+      "x": 1029,
       "y": 242,
       "moving": null,
       "disappear": false
     },
     {
       "name": "Platform_5",
-      "x": 901,
+      "x": 807,
       "y": 148,
       "moving": {
         "speed": 1.5,
-        "rangeMin": 601,
+        "rangeMin": 507,
         "rangeMax": 1104,
         "direction": -1
       },
@@ -51,7 +51,7 @@
     "visible": true,
     "host": "Platform_4",
     "side": "right",
-    "x": 1013,
+    "x": 1139,
     "y": 234,
     "width": 90,
     "height": 8

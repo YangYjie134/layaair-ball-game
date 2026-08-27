@@ -157,10 +157,13 @@ export default class BallController extends Laya.Script {
     // 上一帧是否按下了重开键 R（用于检测按键刚按下）
     private prevRestartKey: boolean = false;
 
-    // ── 4. 关卡状态：记录当前关卡编号与界面显示内容 ──
+    // ── 4. 关卡状态：记录当前关卡编号与四格难度 HUD ──
     private currentLevel: number = 1;
     private readonly maxLevel: number = 4;
-    private levelText: any = null;
+    private levelDifficultyHud: any = null;
+    private levelDifficultyCells: any[] = [];
+    private levelDifficultyNumerals: any[] = [];
+    private levelDeathRollbackDisplay: { level: number; fromProgress: number } | null = null;
     private rng: () => number = Math.random;
 
     private platforms: any[] = [];       // Platform_ 开头的节点和 Ground 都会放进这里。
@@ -213,7 +216,7 @@ export default class BallController extends Laya.Script {
         // 游戏启动时先记录平台和墙体节点，后续碰撞都靠这些节点的位置计算。
         // 收集场景中的所有平台
         this.collectPlatforms();
-        this.createLevelText();
+        this.createLevelDifficultyBar();
     }
 
     // 每帧更新，处理输入、重力、跳跃和碰撞等逻辑
@@ -1290,6 +1293,12 @@ export default class BallController extends Laya.Script {
         const ball = this.owner as any;
         const now = this.getWpBNow();
 
+        // Capture only the derived HUD display. Authoritative Ball growth still resets in respawn().
+        this.levelDeathRollbackDisplay = {
+            level: this.currentLevel,
+            fromProgress: Math.max(0, Math.min(1, this.ballEnergyVisualProgress)),
+        };
+
         // Persistent Ground state must be sampled before any reconstruction writer suppresses it.
         this.captureDeathGroundCanonicalState();
 
@@ -2359,6 +2368,9 @@ export default class BallController extends Laya.Script {
             return;
         }
 
+        // Existing reconstruction time drives the active cell fade; no independent timer is created.
+        this.updateLevelDifficultyBar();
+
         switch (this.deathReconstructionPhase) {
             case 'DECONSTRUCTING':
                 this.updateDeathDeconstruction(elapsed);
@@ -2499,6 +2511,11 @@ export default class BallController extends Laya.Script {
         this.deathWorldGenerationDone = false;
         this.deathCoreReassemblyStarted = false;
         this.deathBallWasVisible = true;
+        this.levelDeathRollbackDisplay = null;
+        if (wasActive) {
+            // Converge exactly to the authoritative initial growth state at reconstruction completion.
+            this.updateLevelDifficultyBar();
+        }
     }
     private captureFatalVisualPosition(): void {
         const ball = this.owner as any;
@@ -2829,7 +2846,7 @@ export default class BallController extends Laya.Script {
         this.respawn();
         this.randomizePlatforms();
         this.randomizeHazards();
-        this.updateLevelText();
+        this.updateLevelDifficultyBar();
         this.beginLevelTransition();
     }
 
@@ -2841,28 +2858,180 @@ export default class BallController extends Laya.Script {
         this.restartGame();
     }
 
-    // 创建关卡显示文本，用于在界面上展示当前关卡编号
-    private createLevelText(): void {
-        if (this.levelText) return;
+    // 复用 SCORE HUD 的切角框与分段格语言，只展示四格成长进度。
+    private createLevelDifficultyBar(): void {
+        if (this.levelDifficultyHud) return;
 
-        this.levelText = new Laya.Text();
-        this.levelText.fontSize = 28;
-        this.levelText.color = "#FFD700";
-        this.levelText.bold = true;
-        this.levelText.x = 40;
-        this.levelText.y = 80;
-        this.levelText.width = 300;
-        this.levelText.height = 50;
-        this.levelText.zOrder = 9999;
+        const hudWidth = 202;
+        const hudHeight = 40;
+        this.levelDifficultyHud = new Laya.Sprite();
+        this.levelDifficultyHud.x = 40;
+        this.levelDifficultyHud.y = 82;
+        this.levelDifficultyHud.width = hudWidth;
+        this.levelDifficultyHud.height = hudHeight;
+        this.levelDifficultyHud.zOrder = 9999;
+        this.levelDifficultyHud.mouseEnabled = false;
 
-        Laya.stage.addChild(this.levelText);
-        this.updateLevelText();
+        const background = new Laya.Sprite();
+        background.alpha = 0.9;
+        background.graphics.drawPoly(
+            0,
+            0,
+            [8, 0, hudWidth - 8, 0, hudWidth, 8, hudWidth, hudHeight - 8,
+                hudWidth - 8, hudHeight, 8, hudHeight, 0, hudHeight - 8, 0, 8],
+            "#06111F",
+            "#1A7188",
+            1
+        );
+        this.levelDifficultyHud.addChild(background);
+
+        const frame = new Laya.Sprite();
+        frame.graphics.drawLine(14, 0, 92, 0, "#35E9FF", 1.5);
+        frame.graphics.drawLine(8, hudHeight - 1, 42, hudHeight - 1, "#7C4DFF", 1);
+        frame.graphics.drawLine(hudWidth - 10, 4, hudWidth - 5, 9, "#35E9FF", 1);
+        frame.graphics.drawLine(58, 7, 58, hudHeight - 7, "#164B5A", 1);
+        this.levelDifficultyHud.addChild(frame);
+
+        const levelLabel = new Laya.Text();
+        levelLabel.name = "WPH_LevelLabel";
+        levelLabel.text = "LEVEL";
+        levelLabel.font = "Arial";
+        levelLabel.fontSize = 14;
+        levelLabel.color = "#78D7E8";
+        levelLabel.bold = true;
+        levelLabel.x = 14;
+        levelLabel.y = 5;
+        levelLabel.width = 42;
+        levelLabel.height = 30;
+        levelLabel.align = "left";
+        levelLabel.valign = "middle";
+        levelLabel.mouseEnabled = false;
+        this.levelDifficultyHud.addChild(levelLabel);
+
+        this.levelDifficultyCells = [];
+        this.levelDifficultyNumerals = [];
+        const cellStartX = 67;
+        const cellWidth = 28;
+        const cellHeight = 20;
+        const cellGap = 4;
+        for (let i = 0; i < this.maxLevel; i++) {
+            const cell = new Laya.Sprite();
+            cell.name = "WPH_LevelCell_" + (i + 1);
+            cell.x = cellStartX + i * (cellWidth + cellGap);
+            cell.y = 10;
+            cell.width = cellWidth;
+            cell.height = cellHeight;
+            cell.mouseEnabled = false;
+
+            const numeral = new Laya.Text();
+            numeral.name = "WPH_LevelRoman_" + (i + 1);
+            numeral.font = "Arial";
+            numeral.fontSize = 14;
+            numeral.bold = true;
+            numeral.stroke = 1;
+            numeral.strokeColor = "#031019";
+            numeral.width = cellWidth;
+            numeral.height = cellHeight;
+            numeral.align = "center";
+            numeral.valign = "middle";
+            numeral.mouseEnabled = false;
+            cell.addChild(numeral);
+
+            this.levelDifficultyHud.addChild(cell);
+            this.levelDifficultyCells.push(cell);
+            this.levelDifficultyNumerals.push(numeral);
+        }
+
+        Laya.stage.addChild(this.levelDifficultyHud);
+        this.updateLevelDifficultyBar();
     }
 
-    // 根据当前关卡状态刷新关卡显示文本
-    private updateLevelText(): void {
-        if (!this.levelText) return;
-        this.levelText.text = "Level: " + this.currentLevel;
+    // 当前格与 Cyber Ball 共用调色板和成长进度；已完成格只取该关终态色。
+    private updateLevelDifficultyBar(): void {
+        const palettes = BallController.BALL_ENERGY_CHECKPOINT_PALETTES;
+        const romanNumerals = ["I", "II", "III", "IV"];
+
+        for (let i = 0; i < this.levelDifficultyCells.length; i++) {
+            const cell = this.levelDifficultyCells[i];
+            const numeral = this.levelDifficultyNumerals[i];
+            const cellWidth = Math.max(1, Number(cell?.width) || 28);
+            const cellHeight = Math.max(1, Number(cell?.height) || 20);
+            const level = i + 1;
+            const isCompleted = level < this.currentLevel;
+            const isCurrent = level === this.currentLevel;
+            const startIndex = Math.max(0, Math.min(palettes.length - 2, level - 1));
+            const start = palettes[startIndex];
+            const target = palettes[startIndex + 1];
+            const currentDisplayProgress = this.resolveLevelDeathRollbackDisplayProgress(level);
+            const growthProgress = isCompleted
+                ? 1
+                : isCurrent
+                    ? currentDisplayProgress
+                    : 0;
+            const fillFrom = start.coreOuter.map((channel: number) => Math.round(channel * 0.44));
+            const fillTo = target.coreOuter.map((channel: number) => Math.round(channel * 0.44));
+            const strokeFrom = start.coreOuterStroke.map((channel: number) => Math.round(channel * 0.76));
+            const strokeTo = target.coreOuterStroke.map((channel: number) => Math.round(channel * 0.76));
+
+            cell.graphics.clear();
+            cell.alpha = isCurrent ? 1 : isCompleted ? 0.88 : 0.68;
+            cell.graphics.drawPoly(
+                0,
+                0,
+                [0, 0, cellWidth - 4, 0, cellWidth, 4, cellWidth, cellHeight, 0, cellHeight],
+                isCompleted || isCurrent
+                    ? this.mixBallEnergyColor(fillFrom, fillTo, growthProgress)
+                    : "#081822",
+                isCompleted || isCurrent
+                    ? this.mixBallEnergyColor(strokeFrom, strokeTo, growthProgress)
+                    : "#244956",
+                isCurrent ? 1.6 : 1
+            );
+
+            if (isCompleted || isCurrent) {
+                const growthWidth = isCompleted
+                    ? cellWidth - 6
+                    : Math.max(2, Math.round((cellWidth - 6) * growthProgress));
+                cell.graphics.drawLine(
+                    3,
+                    cellHeight - 3,
+                    3 + growthWidth,
+                    cellHeight - 3,
+                    this.mixBallEnergyColor(start.circuitPrimary, target.circuitPrimary, growthProgress),
+                    1
+                );
+            }
+
+            if (numeral) {
+                numeral.text = isCurrent ? romanNumerals[i] : "";
+                numeral.color = this.mixBallEnergyColor(
+                    start.circuitNode,
+                    target.circuitNode,
+                    growthProgress
+                );
+            }
+        }
+    }
+
+    private resolveLevelDeathRollbackDisplayProgress(level: number): number {
+        const authoritativeProgress = Math.max(0, Math.min(1, this.ballEnergyVisualProgress));
+        const rollback = this.levelDeathRollbackDisplay;
+        if (
+            !rollback
+            || rollback.level !== level
+            || this.deathReconstructionPhase === 'IDLE'
+            || this.deathReconstructionStartedAt <= 0
+        ) {
+            return authoritativeProgress;
+        }
+
+        const elapsed = Math.max(0, this.getWpBNow() - this.deathReconstructionStartedAt);
+        const timelineProgress = Math.max(
+            0,
+            Math.min(1, elapsed / BallController.DEATH_RECONSTRUCTION_DURATION_MS)
+        );
+        const easedProgress = timelineProgress * timelineProgress * (3 - 2 * timelineProgress);
+        return rollback.fromProgress * (1 - easedProgress);
     }
     /**
      * 统一计算墙体内侧边界。
@@ -3337,8 +3506,47 @@ export default class BallController extends Laya.Script {
         // X 轴：相邻平台中心水平距离尽量不超过 300
         const maxNeighborDX = 300;
 
+        // 平台生成带只收窄 spawn X；墙体、球的活动范围和移动平台运行区间保持原状。
+        // 当前 200px 平台得到 75px 边缘留白：保留抗贴墙收益，同时给整体构图释放横向空间。
+        const widestPlatform = sorted.reduce(
+            (width: number, platform: any) => Math.max(width, Number(platform?.width) || 200),
+            0
+        );
+        const playfieldWidth = Math.max(0, xMax - xMin);
+        const desiredGenerationMargin = Math.min(
+            widestPlatform * 0.375,
+            Math.max(0, maxNeighborDX - widestPlatform)
+        );
+        const maximumGenerationMargin = Math.max(0, (playfieldWidth - widestPlatform) * 0.5);
+        const platformGenerationMargin = Math.min(desiredGenerationMargin, maximumGenerationMargin);
+        const generationBandMin = xMin + platformGenerationMargin;
+        const generationBandMax = xMax - platformGenerationMargin;
+
+        const compositionCenterX = (generationBandMin + generationBandMax) * 0.5;
+        const compositionHalfSpan = Math.max(
+            1,
+            (generationBandMax - generationBandMin - widestPlatform) * 0.5
+        );
+
+        // 连续单样本重映射：用累计横向偏移平衡左右负载，用中心外扩减少窄带堆叠。
+        // 节奏压力只在连续同向或连续换向已经出现后介入，不会主动制造阶梯或乒乓节奏。
+        const compositionBalanceGain = 6;
+        const sideOccupancyBalanceGain = 2;
+        const compositionOutwardGain = 0.55;
+        const staticStreakPressure = 3.6;
+        const movingStreakPressure = 2.6;
+        const staticAntiAlternationPressure = 0.9;
+        const movingAntiAlternationPressure = 0.65;
+        const maximumCompositionPressure = 5;
+
         // 记录上一块平台的中心 X，用于约束相邻距离
         let prevCenterX = this.startX;
+        let lastHorizontalDirection = 0;
+        let sameDirectionStreak = 0;
+        let alternatingDirectionStreak = 0;
+        let normalizedCompositionOffset = 0;
+        let leftRightOccupancyBalance = 0;
+        let sampledPlatformCount = 0;
         const movingCount = this.currentLevel === 3 || this.currentLevel === 4 ? 2 : this.currentLevel === 2 ? 1 : 0;
         const movingIndices = new Set<number>();
         const targetMovingCount = Math.min(movingCount, count);
@@ -3360,6 +3568,8 @@ export default class BallController extends Laya.Script {
             // ── X：中心坐标的合法范围（保证平台整体在墙内）──
             const centerMin = xMin + halfWidth;
             const centerMax = xMax - halfWidth;
+            const generationCenterMin = generationBandMin + halfWidth;
+            const generationCenterMax = generationBandMax - halfWidth;
 
             // 相邻平台中心距离约束在 ±maxNeighborDX 内
             let lo = Math.max(centerMin, prevCenterX - maxNeighborDX);
@@ -3368,13 +3578,86 @@ export default class BallController extends Laya.Script {
             let centerX: number;
             if (i === 0) {
                 // Platform_1 特殊处理：避开出生点正下方，但留在可跳范围内
-                centerX = this.pickPlatform1CenterX(centerMin, centerMax, halfWidth);
+                centerX = this.pickPlatform1CenterX(
+                    centerMin,
+                    centerMax,
+                    halfWidth,
+                    generationCenterMin,
+                    generationCenterMax
+                );
             } else {
                 if (lo > hi) { lo = centerMin; hi = centerMax; } // 兜底，避免空区间
-                centerX = lo + this.rng() * (hi - lo);
+                const bandLo = Math.max(lo, generationCenterMin);
+                const bandHi = Math.min(hi, generationCenterMax);
+                // 生成带交集为空时，回退到原有墙内 + neighbor 合法区间，玩法约束优先。
+                const sampleLo = bandLo <= bandHi ? bandLo : lo;
+                const sampleHi = bandLo <= bandHi ? bandHi : hi;
+                const randomSample = this.spreadPlatformSample(this.rng());
+                const movingComposition = movingIndices.has(i);
+                const streakPressure = movingComposition
+                    ? movingStreakPressure
+                    : staticStreakPressure;
+                const antiAlternationPressure = movingComposition
+                    ? movingAntiAlternationPressure
+                    : staticAntiAlternationPressure;
+                const meanCompositionOffset = sampledPlatformCount > 0
+                    ? normalizedCompositionOffset / sampledPlatformCount
+                    : 0;
+                const compositionPressure = -meanCompositionOffset * compositionBalanceGain
+                    - leftRightOccupancyBalance * sideOccupancyBalanceGain;
+                const rhythmPressure = lastHorizontalDirection === 0
+                    ? 0
+                    : sameDirectionStreak >= 2
+                        ? -lastHorizontalDirection * streakPressure
+                        : alternatingDirectionStreak >= 1
+                            ? lastHorizontalDirection * antiAlternationPressure
+                            : 0;
+                const combinedPressure = Math.max(
+                    -maximumCompositionPressure,
+                    Math.min(maximumCompositionPressure, compositionPressure + rhythmPressure)
+                );
+                const biasedSample = this.biasPlatformSample(randomSample, combinedPressure);
+                const sampledCenterX = sampleLo + biasedSample * (sampleHi - sampleLo);
+                const normalizedSampleOffset = Math.max(
+                    -1,
+                    Math.min(1, (sampledCenterX - compositionCenterX) / compositionHalfSpan)
+                );
+                const outwardDirection = normalizedSampleOffset === 0
+                    ? (biasedSample < 0.5 ? -1 : 1)
+                    : Math.sign(normalizedSampleOffset);
+                const outwardRoom = outwardDirection < 0
+                    ? sampledCenterX - sampleLo
+                    : sampleHi - sampledCenterX;
+                const balanceDamping = Math.max(0.15, 1 - Math.abs(meanCompositionOffset));
+                centerX = sampledCenterX
+                    + outwardDirection
+                    * outwardRoom
+                    * compositionOutwardGain
+                    * (1 - Math.abs(normalizedSampleOffset))
+                    * balanceDamping;
             }
 
             platform.x = Math.round(centerX - halfWidth);
+            const horizontalDirection = Math.sign(centerX - prevCenterX);
+            if (horizontalDirection !== 0) {
+                if (horizontalDirection === lastHorizontalDirection) {
+                    sameDirectionStreak++;
+                    alternatingDirectionStreak = 0;
+                } else {
+                    alternatingDirectionStreak = lastHorizontalDirection === 0
+                        ? 0
+                        : alternatingDirectionStreak + 1;
+                    lastHorizontalDirection = horizontalDirection;
+                    sameDirectionStreak = 1;
+                }
+            }
+            const normalizedCenterOffset = Math.max(
+                -1,
+                Math.min(1, (centerX - compositionCenterX) / compositionHalfSpan)
+            );
+            normalizedCompositionOffset += normalizedCenterOffset;
+            leftRightOccupancyBalance += Math.sign(normalizedCenterOffset);
+            sampledPlatformCount++;
             prevCenterX = centerX;
 
             // 移动平台分配（Level 2: 1个, Level 3/4: 2个）
@@ -3441,7 +3724,13 @@ export default class BallController extends Laya.Script {
     }
 
     // 为 Platform_1 选一个中心 X：避开出生点正下方，且不离出生点太远
-    private pickPlatform1CenterX(centerMin: number, centerMax: number, halfWidth: number): number {
+    private pickPlatform1CenterX(
+        centerMin: number,
+        centerMax: number,
+        halfWidth: number,
+        generationCenterMin: number = centerMin,
+        generationCenterMax: number = centerMax
+    ): number {
         const ballHalf = this.getBallRadius();
         // 出生点正下方的“禁放”区间：球的水平投影与平台重叠则视为正下方
         const forbidLo = this.startX - halfWidth - ballHalf;
@@ -3460,16 +3749,44 @@ export default class BallController extends Laya.Script {
         if (rightLo <= rightHi) ranges.push([rightLo, rightHi]);
         if (leftLo <= leftHi) ranges.push([leftLo, leftHi]);
 
+        const bandRanges = ranges
+            .map(([lo, hi]): [number, number] => [
+                Math.max(lo, generationCenterMin),
+                Math.min(hi, generationCenterMax),
+            ])
+            .filter(([lo, hi]) => lo <= hi);
+        // 生成带过窄或无交集时保留原有可跳候选，且不增加 RNG draw。
+        const sampledRanges = bandRanges.length > 0 ? bandRanges : ranges;
+
         // 正常情况：在左右候选区间里随机挑一段
-        if (ranges.length > 0) {
-            const [lo, hi] = ranges[Math.floor(this.rng() * ranges.length)];
-            return lo + this.rng() * (hi - lo);
+        if (sampledRanges.length > 0) {
+            const [lo, hi] = sampledRanges[Math.floor(this.rng() * sampledRanges.length)];
+            const randomSample = this.spreadPlatformSample(this.rng());
+            return lo + randomSample * (hi - lo);
         }
 
         // 兜底：直接放到出生点右侧最小错开处（仍夹在墙内），保证不在正下方
         let fallback = this.startX + minOffset;
         if (fallback > centerMax) fallback = this.startX - minOffset;
         return Math.min(centerMax, Math.max(centerMin, fallback));
+    }
+
+    // 对单次均匀样本做对称、连续、单调的中心外扩，保留完整区间与唯一布局多样性。
+    private spreadPlatformSample(sample: number): number {
+        const value = Math.max(0, Math.min(1, sample));
+        const exponent = 1.8;
+        return value < 0.5
+            ? 0.5 * Math.pow(value * 2, exponent)
+            : 1 - 0.5 * Math.pow((1 - value) * 2, exponent);
+    }
+
+    // 正值向区间右侧、负值向左侧软偏移；指数映射始终单调且不新增 RNG draw。
+    private biasPlatformSample(sample: number, pressure: number): number {
+        const value = Math.max(0, Math.min(1, sample));
+        const boundedPressure = Math.max(-5, Math.min(5, pressure));
+        return boundedPressure >= 0
+            ? 1 - Math.pow(1 - value, 1 + boundedPressure)
+            : Math.pow(value, 1 - boundedPressure);
     }
 
     // 检查一个或多个按键是否被按下
@@ -3960,6 +4277,9 @@ export default class BallController extends Laya.Script {
 
     private applyBallEnergyVisual(level: number, progress: number, force: boolean): void {
         const normalizedProgress = Math.max(0, Math.min(1, progress));
+        // LEVEL is a derived consumer of the same effective Ball progress and must sync even when repaint is cached.
+        this.ballEnergyVisualProgress = normalizedProgress;
+        this.updateLevelDifficultyBar();
         if (
             !force
             && this.ballEnergyRenderedLevel === level
@@ -4042,7 +4362,6 @@ export default class BallController extends Laya.Script {
             trail.graphics.drawCircle(0, 0, 2.4, trailInner);
         }
 
-        this.ballEnergyVisualProgress = normalizedProgress;
         this.ballEnergyEvolutionStrength = evolutionStrength;
         this.ballEnergyRenderedLevel = level;
         this.ballEnergyRenderedProgress = normalizedProgress;
@@ -4100,12 +4419,12 @@ export default class BallController extends Laya.Script {
         visual.scaleY = this.ballVisualScaleY;
 
         if (this.ballAura) {
-            const auraScale = 0.94 + pulse * 0.14;
+            const auraScale = 1.08 + pulse * 0.16;
             this.ballAura.scaleX = auraScale;
             this.ballAura.scaleY = auraScale;
-            this.ballAura.alpha = 0.14
+            this.ballAura.alpha = 0.2
                 + this.ballEnergyEvolutionStrength * 0.08
-                + pulse * (0.13 + this.ballEnergyEvolutionStrength * 0.04);
+                + pulse * (0.15 + this.ballEnergyEvolutionStrength * 0.04);
         }
         if (this.ballCore) {
             const coreScale = 0.9 + pulse * 0.18;
@@ -4266,7 +4585,9 @@ export default class BallController extends Laya.Script {
         this.groundVisual.zOrder = 2;
         this.groundEnergy.width = width;
         this.groundEnergy.height = height;
-        this.groundEnergy.visible = this.deathEnabled;
+        this.groundEnergy.x = 0;
+        this.groundEnergy.y = 0;
+        this.groundEnergy.visible = true;
 
         graphics.clear();
         energyGraphics.clear();
@@ -4298,12 +4619,65 @@ export default class BallController extends Laya.Script {
             }
         } else {
             if (typeof graphics.drawRect === "function") {
-                graphics.drawRect(0, 0, width, height, "#102A40", "#35E9FF", 1);
+                graphics.drawRect(0, 0, width, height, "#0C2836", "#2D6572", 1);
+            }
+            if (typeof graphics.drawPoly === "function") {
+                const panelWidth = 112;
+                const panelBottom = Math.max(8, height - 4);
+                for (let x = 0, panelIndex = 0; x < width; x += panelWidth, panelIndex++) {
+                    const panelX = x + 3;
+                    const availableWidth = Math.max(0, Math.min(panelWidth - 6, width - panelX));
+                    if (availableWidth < 12) continue;
+                    graphics.drawPoly(
+                        panelX,
+                        0,
+                        [0, 5, 7, 2, availableWidth - 8, 2, availableWidth, 6,
+                            availableWidth - 5, panelBottom, 5, panelBottom],
+                        panelIndex % 2 === 0 ? "#123B49" : "#0F3442",
+                        "#28606D",
+                        0.7
+                    );
+                }
             }
             if (typeof graphics.drawLine === "function") {
-                graphics.drawLine(0, 1, width, 1, "#8FFBFF", 2);
-                for (let x = 16; x < width; x += 48) {
-                    graphics.drawLine(x, 5, Math.min(width, x + 22), 5, "#245D73", 1);
+                // 比背景亮、但弱于平台主高光的 floor surface edge。
+                graphics.drawLine(0, 1, width, 1, "#73C9D6", 1.5);
+                graphics.drawLine(0, 3, width, 3, "#285C69", 1);
+                graphics.drawLine(0, height - 2, width, height - 2, "#20505D", 1);
+                for (let x = 0; x < width; x += 112) {
+                    graphics.drawLine(x, 3, x, height - 3, "#397684", 1);
+                    graphics.drawLine(
+                        x + 18,
+                        Math.max(7, height - 7),
+                        Math.min(width, x + 42),
+                        6,
+                        "#397583",
+                        1
+                    );
+                }
+                for (let x = 22; x < width; x += 168) {
+                    graphics.drawLine(x, 8, Math.min(width, x + 28), 8, "#4E98A5", 1);
+                    graphics.drawLine(x + 38, height - 7, Math.min(width, x + 54), height - 7, "#34717F", 1);
+                }
+                for (let x = 72; x < width; x += 224) {
+                    graphics.drawLine(x, 4, Math.min(width, x + 10), 4, "#82DAE3", 1);
+                }
+            }
+            // 复用 Ground 自身能量层：少量固定节点 + 低亮漂移，不引入第二粒子系统或 RNG。
+            if (typeof energyGraphics.drawCircle === "function") {
+                const moteCount = Math.max(7, Math.min(11, Math.round(width / 128)));
+                for (let i = 0; i < moteCount; i++) {
+                    const x = (i * 127 + 43) % width;
+                    const y = 5 + ((i * 9) % Math.max(3, height - 10));
+                    const outer = i % 3 === 0 ? 2 : 1.4;
+                    energyGraphics.drawCircle(x, y, outer, i % 2 === 0 ? "#238CA3" : "#316FB5");
+                    energyGraphics.drawCircle(x, y, 0.75, i % 2 === 0 ? "#B6FAFF" : "#B7D5FF");
+                }
+            }
+            if (typeof energyGraphics.drawLine === "function") {
+                for (let x = 46; x < width; x += 224) {
+                    energyGraphics.drawLine(x - 5, 5, x + 7, 5, "#69D7E5", 1);
+                    energyGraphics.drawLine(x + 18, height - 8, x + 28, height - 8, "#5A8FDF", 0.8);
                 }
             }
         }
@@ -4391,11 +4765,18 @@ export default class BallController extends Laya.Script {
         }
 
         if (this.groundVisual) {
-            this.groundVisual.alpha = this.deathEnabled ? 0.78 + pulse * 0.2 : 0.82;
+            this.groundVisual.alpha = this.deathEnabled ? 0.78 + pulse * 0.2 : 0.98 + pulse * 0.02;
         }
         if (this.groundEnergy) {
-            this.groundEnergy.alpha = 0.35 + pulse * 0.65;
-            this.groundEnergy.y = Math.round(Math.sin(this.visualPhase * 1.7) * 2);
+            if (this.deathEnabled) {
+                this.groundEnergy.alpha = 0.35 + pulse * 0.65;
+                this.groundEnergy.x = 0;
+                this.groundEnergy.y = Math.round(Math.sin(this.visualPhase * 1.7) * 2);
+            } else {
+                this.groundEnergy.alpha = 0.34 + pulse * 0.2;
+                this.groundEnergy.x = Math.round(Math.sin(this.visualPhase * 0.43) * 3);
+                this.groundEnergy.y = Math.round(Math.sin(this.visualPhase * 0.71));
+            }
         }
         for (const spike of this.spikes) {
             const energy = typeof spike?.getChildByName === "function"
