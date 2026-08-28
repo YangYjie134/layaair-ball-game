@@ -10,19 +10,23 @@ import { SfxManager } from "./SfxManager";
 import BallController from "./BallController";
 import { LevelTransition } from "./LevelTransition";
 import { TouchController } from "./TouchController";
+import { TouchTutorialUI } from "./TouchTutorialUI";
 
 @regClass()
 export class Main extends Laya.Script {
     private muteKeyHeld: boolean = false;
     private ballController: BallController | null = null;
     private touchController: TouchController | null = null;
+    private touchTutorial: TouchTutorialUI | null = null;
     private gameStarted: boolean = false;
+    private mobileTouchSession: boolean = false;
 
     onStart() {
         console.log("Main onStart");
         BackgroundManager.draw(this.owner);
         ScoreManager.instance.init();
         this.touchController = TouchController.create();
+        this.mobileTouchSession = !!Laya.Browser.onMobile && TouchController.isTouchCapable();
 
         this.ballController = this.findBallController();
         if (this.ballController) {
@@ -45,7 +49,7 @@ export class Main extends Laya.Script {
             }
         });
 
-        IntroUI.show(() => this.acceptStartIntent());
+        IntroUI.show(() => this.acceptStartIntent(), this.mobileTouchSession);
         Laya.stage.on(Laya.Event.KEY_DOWN, this, this.onMuteKeyDown);
         Laya.stage.on(Laya.Event.KEY_UP, this, this.onMuteKeyUp);
         console.log("Main menu active");
@@ -78,15 +82,45 @@ export class Main extends Laya.Script {
         this.gameStarted = true;
         this.touchController?.completePreGame();
         this.touchController?.setGameplayActive(false);
-        LevelTransition.show(1, () => {
-            if (!this.ballController) return;
-            this.ballController.enabled = true;
-            this.touchController?.setGameplayActive(true);
-            BgmManager.playBgm();
-        });
+        LevelTransition.show(1, () => this.enterLevelOne());
+    }
+
+    private enterLevelOne(): void {
+        if (!this.ballController) {
+            return;
+        }
+
+        if (this.mobileTouchSession && this.touchController) {
+            this.touchController.setGameplayActive(true);
+            const tutorial = TouchTutorialUI.showOnce(() => this.completeTouchTutorial());
+            if (tutorial) {
+                this.touchTutorial = tutorial;
+                return;
+            }
+        }
+
+        this.enableGameplay();
+        BgmManager.playBgm();
+    }
+
+    private completeTouchTutorial(): void {
+        this.touchTutorial = null;
+        this.touchController?.resetAll();
+        this.enableGameplay();
+        BgmManager.playBgm();
+    }
+
+    private enableGameplay(): void {
+        if (!this.ballController) {
+            return;
+        }
+        this.ballController.enabled = true;
+        this.touchController?.setGameplayActive(true);
     }
 
     onDestroy(): void {
+        this.touchTutorial?.destroy();
+        this.touchTutorial = null;
         if (this.ballController) {
             this.ballController.setTouchInputSource(null);
         }

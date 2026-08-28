@@ -7,6 +7,8 @@ const ts = require("typescript");
 
 const repoRoot = path.resolve(__dirname, "..");
 const touchPath = path.join(repoRoot, "src", "TouchController.ts");
+const tutorialPath = path.join(repoRoot, "src", "TouchTutorialUI.ts");
+const introPath = path.join(repoRoot, "src", "IntroUI.ts");
 const mainPath = path.join(repoRoot, "src", "Main.ts");
 const ballPath = path.join(repoRoot, "src", "BallController.ts");
 const scenePath = path.join(repoRoot, "assets", "Scene.ls");
@@ -30,6 +32,15 @@ function extractBetween(source, start, end) {
     return source.slice(startIndex, endIndex);
 }
 
+function assertSourceOrder(source, anchors, label) {
+    let previousIndex = -1;
+    for (const anchor of anchors) {
+        const index = source.indexOf(anchor);
+        assert.ok(index > previousIndex, `${label}: expected source order for ${anchor}`);
+        previousIndex = index;
+    }
+}
+
 function loadTouchModule(laya) {
     const compiled = ts.transpileModule(read(touchPath), {
         compilerOptions: {
@@ -47,6 +58,30 @@ function loadTouchModule(laya) {
         Number,
         Laya: laya,
     }, { filename: "TouchController.js" });
+    return module.exports;
+}
+
+function loadTutorialModule(laya, touchModule) {
+    const compiled = ts.transpileModule(read(tutorialPath), {
+        compilerOptions: {
+            module: ts.ModuleKind.CommonJS,
+            target: ts.ScriptTarget.ES2019,
+        },
+        fileName: tutorialPath,
+    }).outputText;
+    const module = { exports: {} };
+    vm.runInNewContext(compiled, {
+        module,
+        exports: module.exports,
+        require(request) {
+            if (request === "./TouchController") return touchModule;
+            throw new Error(`Unexpected tutorial dependency: ${request}`);
+        },
+        console,
+        Math,
+        Number,
+        Laya: laya,
+    }, { filename: "TouchTutorialUI.js" });
     return module.exports;
 }
 
@@ -281,6 +316,7 @@ function createMockLaya(initialWidth = 1334, initialHeight = 750) {
     const Event = {
         MOUSE_DOWN: "mousedown",
         MOUSE_UP: "mouseup",
+        MOUSE_OVER: "mouseover",
         MOUSE_OUT: "mouseout",
         CLICK: "click",
         BLUR: "blur",
@@ -296,6 +332,13 @@ function createMockLaya(initialWidth = 1334, initialHeight = 750) {
         timer: {
             once(delay, caller, method) {
                 scheduled.push({ delay, caller, method });
+            },
+            clear(caller, method) {
+                for (let index = scheduled.length - 1; index >= 0; index--) {
+                    if (scheduled[index].caller === caller && scheduled[index].method === method) {
+                        scheduled.splice(index, 1);
+                    }
+                }
             },
             clearAll(caller) {
                 for (let index = scheduled.length - 1; index >= 0; index--) {
@@ -323,6 +366,9 @@ function createMockLaya(initialWidth = 1334, initialHeight = 750) {
                 const task = scheduled.shift();
                 task.method.call(task.caller);
             }
+        },
+        scheduledCount() {
+            return scheduled.length;
         },
     };
 }
@@ -405,6 +451,159 @@ function runMountedUiSmoke() {
     console.log("independent pressed glow + UI-only finite sparks + touchcancel reset: PASS");
 }
 
+function runTutorialMountedSmoke() {
+    const tutorialMock = createMockLaya(844, 390);
+    const touchModule = loadTouchModule(tutorialMock.laya);
+    const { TouchController } = touchModule;
+    const { TouchTutorialUI } = loadTutorialModule(tutorialMock.laya, touchModule);
+    const controller = TouchController.create();
+    controller.completePreGame();
+    controller.setGameplayActive(true);
+
+    const controlsRoot = findNode(tutorialMock.laya.stage, "MobileTouchControls");
+    const orientationRoot = findNode(tutorialMock.laya.stage, "MobileOrientationHint");
+    const leftHit = findNode(tutorialMock.laya.stage, "MobileTouch_LEFT_HIT");
+    const rightHit = findNode(tutorialMock.laya.stage, "MobileTouch_RIGHT_HIT");
+    const jumpHit = findNode(tutorialMock.laya.stage, "MobileTouch_JUMP_HIT");
+    const stageChildrenBeforeTutorial = tutorialMock.laya.stage.children.length;
+    let completionRuns = 0;
+    let teardownPrecededCompletion = false;
+    const tutorial = TouchTutorialUI.showOnce(() => {
+        teardownPrecededCompletion = findNode(tutorialMock.laya.stage, "TouchTutorialModal") === null;
+        controller.resetAll();
+        completionRuns++;
+    });
+
+    assert.ok(tutorial, "first tutorial display was suppressed");
+    assert.equal(TouchTutorialUI.hasShownThisSession(), true);
+    const tutorialRoot = findNode(tutorialMock.laya.stage, "TouchTutorialModal");
+    assert.ok(tutorialRoot, "tutorial modal was not mounted");
+    assert.equal(tutorialRoot.zOrder, 10002);
+    assert.equal(controlsRoot.zOrder, 9998);
+    assert.equal(orientationRoot.zOrder, 10003);
+    assert.equal(controlsRoot.visible, true, "touch controls hidden beneath tutorial");
+    assert.equal(tutorialRoot.mouseThrough, false);
+    assert.ok(findNode(tutorialRoot, "TouchTutorial_Focus_LEFT"));
+    assert.ok(findNode(tutorialRoot, "TouchTutorial_Focus_RIGHT"));
+    assert.equal(findNode(tutorialRoot, "TouchTutorial_Focus_JUMP"), null);
+
+    let stoppedEvents = 0;
+    const stepOneRoot = findNode(tutorialRoot, "TouchTutorial_STEP_1");
+    const stepOnePanel = findNode(tutorialRoot, "TouchTutorial_GuidePanel");
+    const stepOneYes = findNode(tutorialRoot, "TouchTutorial_YES");
+    const stepOneYesFace = findNode(tutorialRoot, "TouchTutorial_YES_Face");
+    const stepOneYesLabel = findNode(tutorialRoot, "TouchTutorial_YES_Label");
+    assert.ok(stepOnePanel && stepOneYes && stepOneYesFace && stepOneYesLabel);
+    assert.equal(stepOneYesLabel.text, "YES");
+    assert.equal(stepOneYesLabel.font, "Courier New");
+    assert.equal(stepOneYesLabel.bold, true);
+    assert.equal(hasBorder(stepOneYesFace, "#38BDF8"), true, "YES did not inherit the cyan cyber CTA edge");
+    assert.equal(stepOneYesFace.graphics.operations.some((operation) => operation.args[3] === "#FFFFFF"), false,
+        "YES used white as its dominant body fill");
+
+    const blockedTap = (target, stageX, stageY) => {
+        const event = { stageX, stageY, stopPropagation() { stoppedEvents++; } };
+        target.emit(tutorialMock.laya.Event.MOUSE_DOWN, event);
+        target.emit(tutorialMock.laya.Event.MOUSE_UP, event);
+        target.emit(tutorialMock.laya.Event.CLICK, event);
+    };
+    blockedTap(tutorialRoot, 12, 12);
+    blockedTap(stepOnePanel, stepOnePanel.x + 30, stepOnePanel.y + 30);
+    for (const control of ["left", "right", "jump"]) {
+        const layout = touchModule.TOUCH_CONTROL_LAYOUT[control];
+        blockedTap(tutorialRoot, layout.hitX + layout.hitSize / 2, layout.hitY + layout.hitSize / 2);
+    }
+    assert.equal(findNode(tutorialRoot, "TouchTutorial_STEP_1"), stepOneRoot,
+        "background, panel, or control-area tap advanced STEP 1");
+    assert.equal(completionRuns, 0);
+    assert.equal(controller.left(), false);
+    assert.equal(controller.right(), false);
+    assert.equal(controller.jump(), false);
+
+    const tutorialChildCount = tutorialRoot.children.length;
+    stepOneYes.emit(tutorialMock.laya.Event.MOUSE_DOWN, { stopPropagation() { stoppedEvents++; } });
+    assert.equal(stepOneYesFace.y, 3, "YES lacks pressed displacement feedback");
+    stepOneYes.emit(tutorialMock.laya.Event.MOUSE_UP, { stopPropagation() { stoppedEvents++; } });
+    assert.equal(stepOneYesFace.y, 0, "YES pressed feedback did not release");
+    stepOneYes.emit(tutorialMock.laya.Event.CLICK, { stopPropagation() { stoppedEvents++; } });
+    const stepTwoRoot = findNode(tutorialRoot, "TouchTutorial_STEP_2");
+    const stepTwoPanel = findNode(tutorialRoot, "TouchTutorial_GuidePanel");
+    const stepTwoYes = findNode(tutorialRoot, "TouchTutorial_YES");
+    const stepTwoYesLabel = findNode(tutorialRoot, "TouchTutorial_YES_Label");
+    assert.ok(stepTwoRoot, "first YES did not advance to STEP 2");
+    assert.ok(stepTwoPanel && stepTwoYes && stepTwoYes !== stepOneYes);
+    assert.equal(stepTwoYesLabel.text, "YES", "STEP 2 confirmation label drifted from YES");
+    assert.equal(stepOneRoot.destroyed, true, "STEP 1 node survived rerender");
+    assert.equal(tutorialRoot.children.length, tutorialChildCount, "tutorial step nodes accumulated");
+    assert.ok(findNode(tutorialRoot, "TouchTutorial_Focus_JUMP"));
+    assert.equal(findNode(tutorialRoot, "TouchTutorial_Focus_LEFT"), null);
+    assert.equal(tutorialMock.scheduledCount(), 1);
+    for (const event of ["click", "mouseover", "mouseout", "mousedown", "mouseup"]) {
+        assert.equal((stepOneYes.handlers.get(event) || []).length, 0, `STEP 1 YES retained ${event} listeners`);
+    }
+    for (const event of ["click", "mousedown", "mouseup"]) {
+        assert.equal((stepOnePanel.handlers.get(event) || []).length, 0, `STEP 1 panel retained ${event} listeners`);
+    }
+
+    stepTwoYes.emit(tutorialMock.laya.Event.CLICK, { stopPropagation() { stoppedEvents++; } });
+    assert.equal(completionRuns, 0, "duplicated input burst skipped STEP 2");
+    assert.equal(findNode(tutorialRoot, "TouchTutorial_STEP_2"), stepTwoRoot);
+    assert.equal(tutorialRoot.children.length, tutorialChildCount, "duplicate input grew tutorial nodes");
+
+    tutorialMock.runTimers();
+    assert.equal(tutorialMock.scheduledCount(), 0);
+    blockedTap(tutorialRoot, 20, 20);
+    blockedTap(stepTwoPanel, stepTwoPanel.x + 32, stepTwoPanel.y + 32);
+    assert.equal(findNode(tutorialRoot, "TouchTutorial_STEP_2"), stepTwoRoot,
+        "background or STEP 2 panel tap completed the tutorial");
+
+    leftHit.emit(tutorialMock.laya.Event.MOUSE_DOWN, {
+        currentTarget: leftHit,
+        touchId: 89,
+        stopPropagation() {},
+    });
+    rightHit.emit(tutorialMock.laya.Event.MOUSE_DOWN, {
+        currentTarget: rightHit,
+        touchId: 90,
+        stopPropagation() {},
+    });
+    jumpHit.emit(tutorialMock.laya.Event.MOUSE_DOWN, {
+        currentTarget: jumpHit,
+        touchId: 91,
+        stopPropagation() {},
+    });
+    assert.equal(controller.left(), true, "reset boundary fixture did not seed held LEFT");
+    assert.equal(controller.right(), true, "reset boundary fixture did not seed held RIGHT");
+    assert.equal(controller.jump(), true, "reset boundary fixture did not seed held JUMP");
+    tutorialMock.runTimers();
+    assert.equal(tutorialMock.scheduledCount(), 0);
+    stepTwoYes.emit(tutorialMock.laya.Event.CLICK, { stopPropagation() { stoppedEvents++; } });
+
+    assert.equal(completionRuns, 1);
+    assert.equal(teardownPrecededCompletion, true);
+    assert.equal(controller.left(), false, "held LEFT survived final tutorial reset");
+    assert.equal(controller.right(), false, "held RIGHT survived final tutorial reset");
+    assert.equal(controller.jump(), false, "held JUMP survived final tutorial reset");
+    assert.equal(findNode(tutorialMock.laya.stage, "TouchTutorialModal"), null);
+    assert.equal(tutorialMock.laya.stage.children.length, stageChildrenBeforeTutorial);
+    assert.equal(tutorialMock.scheduledCount(), 0);
+    assert.equal((tutorialRoot.handlers.get(tutorialMock.laya.Event.MOUSE_DOWN) || []).length, 0);
+    assert.equal((tutorialRoot.handlers.get(tutorialMock.laya.Event.MOUSE_UP) || []).length, 0);
+    assert.equal((tutorialRoot.handlers.get(tutorialMock.laya.Event.CLICK) || []).length, 0);
+    for (const event of ["click", "mouseover", "mouseout", "mousedown", "mouseup"]) {
+        assert.equal((stepTwoYes.handlers.get(event) || []).length, 0, `STEP 2 YES retained ${event} listeners`);
+    }
+    for (const event of ["click", "mousedown", "mouseup"]) {
+        assert.equal((stepTwoPanel.handlers.get(event) || []).length, 0, `STEP 2 panel retained ${event} listeners`);
+    }
+
+    const secondTutorial = TouchTutorialUI.showOnce(() => completionRuns++);
+    assert.equal(secondTutorial, null, "tutorial repeated in the same page session");
+    assert.equal(tutorialMock.laya.stage.children.length, stageChildrenBeforeTutorial);
+    controller.destroy();
+    console.log("YES-only two-step tutorial interception/latch/teardown/session-once/final-reset: PASS");
+}
+
 function runStaticContracts() {
     const ballSource = read(ballPath);
     const headBallSource = headFile("src/BallController.ts");
@@ -419,6 +618,10 @@ function runStaticContracts() {
     console.log("stepPhysics protected body unchanged: PASS");
 
     const touchSource = read(touchPath);
+    const headTouchSource = headFile("src/TouchController.ts");
+    const touchCapability = extractBetween(touchSource, "    public static isTouchCapable()", "    public left()");
+    const headTouchCapability = extractBetween(headTouchSource, "    public static isTouchCapable()", "    public left()");
+    assert.equal(touchCapability, headTouchCapability, "TouchController.isTouchCapable semantics changed");
     assert.match(touchSource, /MOUSE_OUT/);
     assert.match(touchSource, /MOUSE_UP/);
     assert.match(touchSource, /touchcancel/);
@@ -428,6 +631,8 @@ function runStaticContracts() {
     console.log("release/cancel/focus/death-lock hooks: PASS");
 
     const mainSource = read(mainPath);
+    const introSource = read(introPath);
+    const tutorialSource = read(tutorialPath);
     assert.match(touchSource, /innerWidth/);
     assert.match(touchSource, /innerHeight/);
     assert.match(touchSource, /orientationchange/);
@@ -438,6 +643,58 @@ function runStaticContracts() {
     assert.doesNotMatch(touchSource, /requestFullscreen|screen\.orientation\.lock|Math\.random/);
     assert.doesNotMatch(touchSource, /BgmManager|SfxManager|playBgm|playSfx/);
     console.log("session-local pre-game orientation recommendation contracts: PASS");
+
+    assert.match(mainSource, /mobileTouchSession\s*=\s*!!Laya\.Browser\.onMobile\s*&&\s*TouchController\.isTouchCapable\(\)/);
+    assert.match(mainSource, /if \(this\.mobileTouchSession && this\.touchController\) \{[\s\S]*?TouchTutorialUI\.showOnce/);
+    assert.match(mainSource, /IntroUI\.show\(\(\) => this\.acceptStartIntent\(\), this\.mobileTouchSession\)/);
+    assert.match(mainSource, /private completeTouchTutorial\(\): void \{[\s\S]*?resetAll\(\);[\s\S]*?enableGameplay\(\);/);
+    const enterLevelOneSource = extractBetween(mainSource, "    private enterLevelOne(): void", "    private completeTouchTutorial(): void");
+    const tutorialStartBranch = extractBetween(
+        enterLevelOneSource,
+        "            const tutorial = TouchTutorialUI.showOnce",
+        "        this.enableGameplay();"
+    );
+    const completeTutorialSource = extractBetween(
+        mainSource,
+        "    private completeTouchTutorial(): void",
+        "    private enableGameplay(): void"
+    );
+    assert.doesNotMatch(tutorialStartBranch, /BgmManager\.playBgm\(\)/,
+        "Gameplay BGM still starts while the first mobile tutorial mounts");
+    assert.match(tutorialStartBranch, /if \(tutorial\) \{\s*this\.touchTutorial = tutorial;\s*return;\s*\}/);
+    assert.equal((enterLevelOneSource.match(/BgmManager\.playBgm\(\)/g) || []).length, 1,
+        "enterLevelOne must retain exactly one direct-start BGM call");
+    assertSourceOrder(
+        enterLevelOneSource.slice(enterLevelOneSource.indexOf("        this.enableGameplay();")),
+        ["this.enableGameplay();", "BgmManager.playBgm();"],
+        "desktop and session-repeat direct start"
+    );
+    assertSourceOrder(
+        completeTutorialSource,
+        ["this.touchTutorial = null;", "this.touchController?.resetAll();", "this.enableGameplay();", "BgmManager.playBgm();"],
+        "final YES completion"
+    );
+    assert.match(introSource, /"CONTROL TEST  \/  HOW TO PLAY"/);
+    assert.match(introSource, /"TOUCH CONTROLS  \/  HOW TO PLAY"/);
+    for (const keyId of ["W", "A", "D", "UP", "LEFT", "RIGHT", "R", "M"]) {
+        assert.match(introSource, new RegExp(`createKeycap\\("${keyId}"|createUtilityKey\\("${keyId}"`));
+    }
+    assert.match(introSource, /private static renderMobileHowToPlay\(\): void/);
+    assert.match(introSource, /"MOVE"[\s\S]*?"LEFT\s+\/\s+RIGHT"[\s\S]*?"JUMP"/);
+    assert.doesNotMatch(tutorialSource, /localStorage|sessionStorage|document\.cookie/);
+    assert.doesNotMatch(tutorialSource, /charge|long-press|pause|settings|gesture/i);
+    assert.match(tutorialSource, /root\.zOrder = 10002/);
+    assert.match(tutorialSource, /root\.mouseThrough = false/);
+    assert.match(tutorialSource, /Event\.MOUSE_DOWN[\s\S]*Event\.MOUSE_UP[\s\S]*Event\.CLICK/);
+    assert.match(tutorialSource, /root\.on\(Laya\.Event\.CLICK, this, this\.blockInput\)/);
+    assert.match(tutorialSource, /button\.on\(Laya\.Event\.CLICK, this, this\.confirmYes\)/);
+    assert.equal((tutorialSource.match(/\.on\(Laya\.Event\.CLICK, this, this\.confirmYes\)/g) || []).length, 1,
+        "YES must be the only CLICK binding with tutorial advancement authority");
+    assert.doesNotMatch(tutorialSource, /TAP TO CONTINUE|TAP TO START|NEXT|START|ENGAGE/);
+    assert.match(tutorialSource, /createText\("YES", 22, "#FFFFFF", true\)[\s\S]*?label\.font = "Courier New"/);
+    assert.match(tutorialSource, /ADVANCE_LATCH_MS:\s*number\s*=\s*180/);
+    assert.doesNotMatch(tutorialSource, /BgmManager|SfxManager|playBgm|playSfx/);
+    console.log("mobile-session, desktop-help, YES-only isolation, BGM order, and final-reset contracts: PASS");
 
     assert.match(touchSource, /PRESS_SPARK_COUNT:\s*number\s*=\s*3/);
     assert.match(touchSource, /freshPress/);
@@ -472,5 +729,6 @@ runStateSmoke();
 runOrientationStateSmoke();
 runLayoutSmoke();
 runMountedUiSmoke();
+runTutorialMountedSmoke();
 runStaticContracts();
 console.log("verification: PASS");

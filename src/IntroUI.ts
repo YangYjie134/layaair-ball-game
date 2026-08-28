@@ -44,6 +44,7 @@ export class IntroUI {
     private static view: "COVER" | "MAIN_MENU" | "HOW_TO_PLAY" = IntroUI.COVER;
     private static selectedIndex: 0 | 1 = 0;
     private static started: boolean = false;
+    private static mobileTouchSession: boolean = false;
     private static keyboardBound: boolean = false;
     private static startHandler: (() => void) | null = null;
     private static container: any = null;
@@ -69,12 +70,13 @@ export class IntroUI {
     private static keycaps: { [key: string]: IntroKeycapVisual } = {};
     private static keyFeedbackLoopActive: boolean = false;
 
-    public static show(onStart: () => void): void {
+    public static show(onStart: () => void, mobileTouchSession: boolean = false): void {
         if (IntroUI.started || IntroUI.container) {
             return;
         }
 
         IntroUI.startHandler = onStart;
+        IntroUI.mobileTouchSession = mobileTouchSession;
         IntroUI.view = IntroUI.COVER;
         IntroUI.selectedIndex = 0;
         IntroUI.resetCoverState();
@@ -715,7 +717,10 @@ export class IntroUI {
         startButton.x = 130;
         startButton.y = 220;
 
-        const howToPlayButton = IntroUI.createButton("CONTROL TEST  /  HOW TO PLAY", 640, 64, "SECONDARY");
+        const helpLabel = IntroUI.mobileTouchSession
+            ? "TOUCH CONTROLS  /  HOW TO PLAY"
+            : "CONTROL TEST  /  HOW TO PLAY";
+        const howToPlayButton = IntroUI.createButton(helpLabel, 640, 64, "SECONDARY");
         howToPlayButton.x = 130;
         howToPlayButton.y = 326;
 
@@ -773,6 +778,11 @@ export class IntroUI {
     }
 
     private static renderHowToPlay(): void {
+        if (IntroUI.mobileTouchSession) {
+            IntroUI.renderMobileHowToPlay();
+            return;
+        }
+
         IntroUI.clearView();
         IntroUI.viewRoot = new Laya.Sprite();
         IntroUI.panel.addChild(IntroUI.viewRoot);
@@ -893,6 +903,200 @@ export class IntroUI {
         IntroUI.viewRoot.addChild(footer);
 
         IntroUI.startKeyFeedbackLoop();
+    }
+
+    private static renderMobileHowToPlay(): void {
+        IntroUI.clearView();
+        IntroUI.viewRoot = new Laya.Sprite();
+        IntroUI.panel.addChild(IntroUI.viewRoot);
+
+        const title = IntroUI.createText("TOUCH CONTROLS", 32, "#F8FAFC", true);
+        title.align = "center";
+        title.valign = "middle";
+        title.x = 40;
+        title.y = 24;
+        title.width = 820;
+        title.height = 42;
+        IntroUI.viewRoot.addChild(title);
+
+        const inputLabel = IntroUI.createText("MOBILE INPUT GUIDE", 14, "#22D3EE", true);
+        inputLabel.align = "center";
+        inputLabel.x = 40;
+        inputLabel.y = 68;
+        inputLabel.width = 820;
+        inputLabel.height = 20;
+        IntroUI.viewRoot.addChild(inputLabel);
+
+        const instruction = IntroUI.createText(
+            "Use the on-screen controls during play.",
+            16,
+            "#B8C7DA",
+            false
+        );
+        instruction.align = "center";
+        instruction.x = 40;
+        instruction.y = 94;
+        instruction.width = 820;
+        instruction.height = 24;
+        IntroUI.viewRoot.addChild(instruction);
+
+        const guideMode = IntroUI.createText(
+            "GUIDE MODE  ·  GAME ACTIONS DISABLED",
+            13,
+            "#C4B5FD",
+            true
+        );
+        guideMode.align = "center";
+        guideMode.x = 248;
+        guideMode.y = 124;
+        guideMode.width = 404;
+        guideMode.height = 22;
+        guideMode.graphics.drawRect(0, 0, 404, 22, "#17142F", "#6D5AA8", 1);
+        IntroUI.viewRoot.addChild(guideMode);
+
+        IntroUI.createTouchGuideCard(
+            "MOVE",
+            "LEFT   /   RIGHT",
+            "Use LEFT and RIGHT to move.",
+            80,
+            168,
+            470,
+            "DIRECTION"
+        );
+        IntroUI.createTouchGuideCard(
+            "JUMP",
+            "JUMP",
+            "Tap JUMP to jump.",
+            574,
+            168,
+            246,
+            "JUMP"
+        );
+
+        const backButton = IntroUI.createButton("BACK", 640, 60, "BACK");
+        backButton.x = 130;
+        backButton.y = 422;
+        IntroUI.viewRoot.addChild(backButton);
+        IntroUI.updateButton(backButton, true);
+        backButton.on(Laya.Event.CLICK, IntroUI, IntroUI.onBackClick);
+        IntroUI.boundItems.push(backButton);
+
+        const hint = IntroUI.createText("TAP BACK TO RETURN", 14, "#64748B", false);
+        hint.align = "center";
+        hint.valign = "middle";
+        hint.x = 40;
+        hint.y = 494;
+        hint.width = 820;
+        hint.height = 24;
+        IntroUI.viewRoot.addChild(hint);
+
+        const footer = IntroUI.createText(
+            "TOUCH LINK READY    //    LEFT + RIGHT + JUMP",
+            12,
+            "#35627A",
+            true
+        );
+        footer.align = "center";
+        footer.x = 40;
+        footer.y = 532;
+        footer.width = 820;
+        footer.height = 18;
+        IntroUI.viewRoot.addChild(footer);
+    }
+
+    private static createTouchGuideCard(
+        action: string,
+        controls: string,
+        detail: string,
+        x: number,
+        y: number,
+        width: number,
+        glyph: "DIRECTION" | "JUMP"
+    ): void {
+        const height = 202;
+        const card = new Laya.Sprite();
+        card.x = x;
+        card.y = y;
+        card.width = width;
+        card.height = height;
+        card.mouseEnabled = false;
+        card.graphics.drawPoly(
+            0,
+            0,
+            IntroUI.cutCornerPoints(width, height, 12),
+            "#06111F",
+            glyph === "DIRECTION" ? "#22D3EE" : "#8B5CF6",
+            2
+        );
+        card.graphics.drawRect(18, 18, width - 36, 2, glyph === "DIRECTION" ? "#155E75" : "#5B4A96");
+        IntroUI.viewRoot.addChild(card);
+
+        const actionLabel = IntroUI.createText(action, 16, "#E8FAFF", true);
+        actionLabel.x = 22;
+        actionLabel.y = 28;
+        actionLabel.width = width - 44;
+        actionLabel.height = 24;
+        actionLabel.align = "center";
+        card.addChild(actionLabel);
+
+        const glyphRoot = new Laya.Sprite();
+        glyphRoot.mouseEnabled = false;
+        card.addChild(glyphRoot);
+        if (glyph === "DIRECTION") {
+            IntroUI.drawTouchGuideButton(glyphRoot, 119, 66, 64, "LEFT");
+            IntroUI.drawTouchGuideButton(glyphRoot, 287, 66, 64, "RIGHT");
+        } else {
+            IntroUI.drawTouchGuideButton(glyphRoot, 91, 66, 64, "JUMP");
+        }
+
+        const controlsLabel = IntroUI.createText(controls, 14, "#67E8F9", true);
+        controlsLabel.x = 18;
+        controlsLabel.y = 137;
+        controlsLabel.width = width - 36;
+        controlsLabel.height = 20;
+        controlsLabel.align = "center";
+        card.addChild(controlsLabel);
+
+        const detailLabel = IntroUI.createText(detail, 13, "#94A3B8", false);
+        detailLabel.x = 18;
+        detailLabel.y = 166;
+        detailLabel.width = width - 36;
+        detailLabel.height = 20;
+        detailLabel.align = "center";
+        card.addChild(detailLabel);
+    }
+
+    private static drawTouchGuideButton(
+        root: any,
+        x: number,
+        y: number,
+        size: number,
+        control: "LEFT" | "RIGHT" | "JUMP"
+    ): void {
+        const button = new Laya.Sprite();
+        button.x = x;
+        button.y = y;
+        button.width = size;
+        button.height = size;
+        button.mouseEnabled = false;
+        button.graphics.drawPoly(
+            0,
+            0,
+            IntroUI.cutCornerPoints(size, size, 9),
+            "#0A2638",
+            "#6AF7FF",
+            2
+        );
+
+        const center = size / 2;
+        if (control === "LEFT") {
+            button.graphics.drawPoly(center - 16, center, [16, -15, 16, -5, 28, -5, 28, 5, 16, 5, 16, 15], "#E8FDFF");
+        } else if (control === "RIGHT") {
+            button.graphics.drawPoly(center + 16, center, [-16, -15, -16, -5, -28, -5, -28, 5, -16, 5, -16, 15], "#E8FDFF");
+        } else {
+            button.graphics.drawPoly(center, center - 16, [-15, 16, -5, 16, -5, 28, 5, 28, 5, 16, 15, 16], "#E8FDFF");
+        }
+        root.addChild(button);
     }
 
     private static addSectionLabel(text: string, x: number, y: number, width: number, color: string): void {
