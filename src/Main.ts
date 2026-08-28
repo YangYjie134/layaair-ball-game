@@ -100,6 +100,11 @@ export class Main extends Laya.Script {
             return;
         }
 
+        if (!this.gameStarted) {
+            this.muteKeyHeld = true;
+            return;
+        }
+
         if (this.muteKeyHeld) {
             return;
         }
