@@ -229,9 +229,9 @@ export default class BallController extends Laya.Script {
             ball,
             {
                 restart: () => this.isKeyDown(Laya.Keyboard.R),
-                left: () => this.isKeyDown(Laya.Keyboard.LEFT, Laya.Keyboard.A),
-                right: () => this.isKeyDown(Laya.Keyboard.RIGHT, Laya.Keyboard.D),
-                jump: () => this.isKeyDown(Laya.Keyboard.W) || this.isKeyDown(Laya.Keyboard.UP),
+                left: () => this.isKeyDown(Laya.Keyboard.LEFT, Laya.Keyboard.A) || !!this.touchInput?.left(),
+                right: () => this.isKeyDown(Laya.Keyboard.RIGHT, Laya.Keyboard.D) || !!this.touchInput?.right(),
+                jump: () => this.isKeyDown(Laya.Keyboard.W) || this.isKeyDown(Laya.Keyboard.UP) || !!this.touchInput?.jump(),
             },
             {
                 currTimer: () => Laya.timer.currTimer,
@@ -473,6 +473,7 @@ export default class BallController extends Laya.Script {
 
     private levelTransitionHandler: ((level: number, resume: () => void) => void) | null = null;
     private levelTransitionPending: boolean = false;
+    private touchInput: BallTouchInputSource | null = null;
     private visualLoopStarted: boolean = false;
     private static readonly PLATFORM_LANDING_IMPACT_DURATION_MS: number = 120;
     private static readonly PLATFORM_LANDING_IMPACT_MAX_Y: number = 3;
@@ -875,6 +876,19 @@ export default class BallController extends Laya.Script {
 
     public setLevelTransitionHandler(handler: ((level: number, resume: () => void) => void) | null): void {
         this.levelTransitionHandler = handler;
+    }
+
+    public setTouchInputSource(source: BallTouchInputSource | null): void {
+        if (this.touchInput && this.touchInput !== source) {
+            this.touchInput.setRuntimeBlockProvider(() => true);
+            this.touchInput.resetAll();
+        }
+        this.touchInput = source;
+        this.touchInput?.setRuntimeBlockProvider(() => (
+            this.levelTransitionPending
+            || this.isDeathReconstructionActive()
+            || ScoreManager.instance.isWon()
+        ));
     }
 
     private beginLevelTransition(): void {
@@ -4793,6 +4807,11 @@ export default class BallController extends Laya.Script {
     }
 
     onDestroy(): void {
+        if (this.touchInput) {
+            this.touchInput.setRuntimeBlockProvider(() => true);
+            this.touchInput.resetAll();
+            this.touchInput = null;
+        }
         this.clearDeathReconstruction();
         this.clearDeathFeedback();
         this.clearDisappearRecoveryStates();
@@ -4844,4 +4863,12 @@ interface DeathReticleTemplate {
 interface DeathReticlePartVisual {
     node: any;
     template: DeathReticlePartTemplate;
+}
+
+export interface BallTouchInputSource {
+    left(): boolean;
+    right(): boolean;
+    jump(): boolean;
+    setRuntimeBlockProvider(provider: (() => boolean) | null): void;
+    resetAll(): void;
 }

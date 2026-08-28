@@ -9,23 +9,31 @@ import { BgmManager } from "./BgmManager";
 import { SfxManager } from "./SfxManager";
 import BallController from "./BallController";
 import { LevelTransition } from "./LevelTransition";
+import { TouchController } from "./TouchController";
 
 @regClass()
 export class Main extends Laya.Script {
     private muteKeyHeld: boolean = false;
     private ballController: BallController | null = null;
+    private touchController: TouchController | null = null;
     private gameStarted: boolean = false;
 
     onStart() {
         console.log("Main onStart");
         BackgroundManager.draw(this.owner);
         ScoreManager.instance.init();
+        this.touchController = TouchController.create();
 
         this.ballController = this.findBallController();
         if (this.ballController) {
             this.ballController.enabled = false;
+            this.ballController.setTouchInputSource(this.touchController);
             this.ballController.setLevelTransitionHandler((level: number, resume: () => void) => {
-                LevelTransition.show(level, resume);
+                this.touchController?.setGameplayActive(false);
+                LevelTransition.show(level, () => {
+                    resume();
+                    this.touchController?.setGameplayActive(true);
+                });
             });
         } else {
             console.error("BallController lookup failed; gameplay remains disabled.");
@@ -63,13 +71,27 @@ export class Main extends Laya.Script {
             console.error("Start rejected: BallController is unavailable.");
             return;
         }
+        if (this.touchController?.deferPreGameActionIfHintVisible(() => this.acceptStartIntent())) {
+            return;
+        }
 
         this.gameStarted = true;
+        this.touchController?.completePreGame();
+        this.touchController?.setGameplayActive(false);
         LevelTransition.show(1, () => {
             if (!this.ballController) return;
             this.ballController.enabled = true;
+            this.touchController?.setGameplayActive(true);
             BgmManager.playBgm();
         });
+    }
+
+    onDestroy(): void {
+        if (this.ballController) {
+            this.ballController.setTouchInputSource(null);
+        }
+        this.touchController?.destroy();
+        this.touchController = null;
     }
 
     private onMuteKeyDown(event: any): void {
