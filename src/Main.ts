@@ -6,6 +6,7 @@ import { BackgroundManager } from "./BackgroundManager";
 import { ScoreManager } from "./ScoreManager";
 import { IntroUI } from "./IntroUI";
 import { BgmManager } from "./BgmManager";
+import { SfxManager } from "./SfxManager";
 import BallController from "./BallController";
 import { LevelTransition } from "./LevelTransition";
 
@@ -82,8 +83,9 @@ export class Main extends Laya.Script {
         }
 
         this.muteKeyHeld = true;
-        Laya.SoundManager.muted = !Laya.SoundManager.muted;
-        console.log("Muted:", Laya.SoundManager.muted);
+        const nextMuted = !SfxManager.isGlobalMuted();
+        SfxManager.setGlobalMuted(nextMuted);
+        console.log("Muted:", nextMuted);
     }
 
     private onMuteKeyUp(event: any): void {

@@ -1,10 +1,12 @@
 declare var Laya: any;
 
 export class SfxManager {
-    private static readonly JUMP_URL: string = "resources/audio/sfx_jump.mp3";
-    private static readonly DEATH_URL: string = "resources/audio/sfx_death.mp3";
-    private static readonly CLEAR_URL: string = "resources/audio/sfx_clear.mp3";
-    private static readonly SFX_VOLUME: number = 0.7;
+    private static readonly JUMP_URL: string = "resources/audio/sfx_jump_lift.wav";
+    private static readonly DEATH_URL: string = "resources/audio/sfx_death_disintegrate.ogg";
+    private static readonly CLEAR_URL: string = "resources/audio/sfx_clear_powerup.ogg";
+    private static readonly JUMP_VOLUME: number = 0.84;
+    private static readonly DEATH_VOLUME: number = 0.7;
+    private static readonly CLEAR_VOLUME: number = 0.7;
     private static readonly SCORE_BODY_START_HZ: number = 880;
     private static readonly SCORE_BODY_END_HZ: number = 1040;
     private static readonly SCORE_BODY_PEAK_GAIN: number = 0.13;
@@ -17,25 +19,41 @@ export class SfxManager {
     private static readonly SCORE_METAL_RELEASE_SECONDS: number = 0.048;
     private static readonly SCORE_RELEASE_SECONDS: number = 0.125;
     private static scoreAudioContext: any = null;
+    private static scoreMasterGain: any = null;
+
+    public static isGlobalMuted(): boolean {
+        return !!Laya.SoundManager.muted;
+    }
+
+    public static setGlobalMuted(muted: boolean): void {
+        const nextMuted = !!muted;
+        Laya.SoundManager.muted = nextMuted;
+        SfxManager.syncScoreMute(nextMuted);
+    }
 
     public static playJump(): void {
-        SfxManager.playOneShot(SfxManager.JUMP_URL);
+        SfxManager.playOneShot(SfxManager.JUMP_URL, SfxManager.JUMP_VOLUME);
     }
 
     public static playDeath(): void {
-        SfxManager.playOneShot(SfxManager.DEATH_URL);
+        SfxManager.playOneShot(SfxManager.DEATH_URL, SfxManager.DEATH_VOLUME);
     }
 
     public static playClear(): void {
-        SfxManager.playOneShot(SfxManager.CLEAR_URL);
+        SfxManager.playOneShot(SfxManager.CLEAR_URL, SfxManager.CLEAR_VOLUME);
     }
 
     public static playScore(): void {
+        if (SfxManager.isGlobalMuted()) return;
+
         try {
             const context = SfxManager.getScoreAudioContext();
-            if (!context || context.state === "closed") return;
+            const masterGain = SfxManager.scoreMasterGain;
+            if (!context || context.state === "closed" || !masterGain) return;
 
             const playConfirmation = (): void => {
+                if (SfxManager.isGlobalMuted()) return;
+
                 try {
                     const now = context.currentTime;
                     const bodyOscillator = context.createOscillator();
@@ -82,9 +100,9 @@ export class SfxManager {
                     );
 
                     bodyOscillator.connect(bodyGain);
-                    bodyGain.connect(context.destination);
+                    bodyGain.connect(masterGain);
                     metalOscillator.connect(metalGain);
-                    metalGain.connect(context.destination);
+                    metalGain.connect(masterGain);
 
                     bodyOscillator.onended = (): void => {
                         try {
@@ -137,23 +155,47 @@ export class SfxManager {
             return SfxManager.scoreAudioContext;
         }
 
+        SfxManager.scoreAudioContext = null;
+        SfxManager.scoreMasterGain = null;
+
         try {
             const browserGlobal: any = typeof globalThis !== "undefined" ? globalThis : null;
             const AudioContextCtor = browserGlobal?.AudioContext ?? browserGlobal?.webkitAudioContext;
             if (typeof AudioContextCtor !== "function") return null;
 
-            SfxManager.scoreAudioContext = new AudioContextCtor();
-            return SfxManager.scoreAudioContext;
+            const context = new AudioContextCtor();
+            const masterGain = context.createGain();
+            masterGain.gain.setValueAtTime(SfxManager.isGlobalMuted() ? 0 : 1, context.currentTime);
+            masterGain.connect(context.destination);
+            SfxManager.scoreAudioContext = context;
+            SfxManager.scoreMasterGain = masterGain;
+            return context;
         } catch (_) {
             SfxManager.scoreAudioContext = null;
+            SfxManager.scoreMasterGain = null;
             return null;
         }
     }
 
-    private static playOneShot(url: string): void {
+    private static syncScoreMute(muted: boolean): void {
+        const context = SfxManager.scoreAudioContext;
+        const masterGain = SfxManager.scoreMasterGain;
+        if (!context || context.state === "closed" || !masterGain) return;
+
         try {
-            Laya.SoundManager.soundVolume = SfxManager.SFX_VOLUME;
-            Laya.SoundManager.playSound(url, 1);
+            masterGain.gain.setValueAtTime(muted ? 0 : 1, context.currentTime);
+        } catch (_) {
+            // The Laya-managed channels still obey the global mute state.
+        }
+    }
+
+    private static playOneShot(url: string, volume: number): void {
+        if (SfxManager.isGlobalMuted()) return;
+
+        try {
+            Laya.SoundManager.soundVolume = 1;
+            const channel = Laya.SoundManager.playSound(url, 1);
+            if (channel) channel.volume = volume;
         } catch (error) {
             console.warn("[SfxManager] Failed to play sound:", url, error);
         }

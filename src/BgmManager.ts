@@ -1,9 +1,9 @@
 declare var Laya: any;
 
 export class BgmManager {
-    private static readonly bgmUrl: string = "resources/audio/bgm_main.mp3";
+    private static readonly bgmUrl: string = "resources/audio/bgm_final_techno7.mp3";
     private static isPlaying: boolean = false;
-    private static volume: number = 0.45;
+    private static volume: number = 0.33;
 
     public static playBgm(): void {
         if (BgmManager.isPlaying) {
