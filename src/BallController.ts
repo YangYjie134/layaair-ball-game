@@ -333,7 +333,7 @@ export default class BallController extends Laya.Script {
         this.previousY = this.centerY;
         this.centerY += this.vy;
         // 推进消失平台计时并刷新预警颜色:counting 超过延迟则消失
-        const nowMs = time.currTimer();
+        const nowMs = this.readActiveGameplayTime(time.currTimer());
         for (const [p, cfg] of this.disappearConfigs) {
             if (cfg.state === 'counting') {
                 const elapsedMs = nowMs - cfg.triggerAt;
@@ -465,7 +465,7 @@ export default class BallController extends Laya.Script {
                 const dc = this.disappearConfigs.get(platform);
                 if (dc && dc.state === 'idle') {
                     dc.state = 'counting';
-                    dc.triggerAt = time.currTimer();
+                    dc.triggerAt = this.readActiveGameplayTime(time.currTimer());
                 }
             }
         }
@@ -474,6 +474,10 @@ export default class BallController extends Laya.Script {
     private levelTransitionHandler: ((level: number, resume: () => void) => void) | null = null;
     private levelTransitionPending: boolean = false;
     private touchInput: BallTouchInputSource | null = null;
+    // Pause is owned by Main. These fields only account for active-gameplay logical time.
+    private activeGameplayPauseStartedAt: number | null = null;
+    private activeGameplayPauseAccumulatedMs: number = 0;
+    private deathHapticsEnabled: boolean = false;
     private visualLoopStarted: boolean = false;
     private static readonly PLATFORM_LANDING_IMPACT_DURATION_MS: number = 120;
     private static readonly PLATFORM_LANDING_IMPACT_MAX_Y: number = 3;
@@ -891,6 +895,38 @@ export default class BallController extends Laya.Script {
         ));
     }
 
+    public isPauseBlockedByGameplayState(): boolean {
+        return !this.enabled
+            || this.levelTransitionPending
+            || this.isHandlingDeath
+            || this.isDeathReconstructionActive()
+            || ScoreManager.instance.isWon();
+    }
+
+    public beginGameplayPauseAccounting(): void {
+        if (this.activeGameplayPauseStartedAt !== null) return;
+        this.activeGameplayPauseStartedAt = this.readGameplayRealTime();
+    }
+
+    public finishGameplayPauseAccounting(): void {
+        if (this.activeGameplayPauseStartedAt === null) return;
+        const realNow = this.readGameplayRealTime();
+        this.activeGameplayPauseAccumulatedMs += Math.max(0, realNow - this.activeGameplayPauseStartedAt);
+        this.activeGameplayPauseStartedAt = null;
+    }
+
+    public synchronizeJumpInputBaseline(): void {
+        this.prevJumpKey = this.isKeyDown(Laya.Keyboard.W) || this.isKeyDown(Laya.Keyboard.UP);
+    }
+
+    public setDeathHapticsEnabled(enabled: boolean): void {
+        this.deathHapticsEnabled = !!enabled;
+    }
+
+    public isDeathHapticsEnabled(): boolean {
+        return this.deathHapticsEnabled;
+    }
+
     private beginLevelTransition(): void {
         this.clearDeathReconstruction();
         const handler = this.levelTransitionHandler;
@@ -994,9 +1030,20 @@ export default class BallController extends Laya.Script {
         }
     }
 
-    private readDisappearRecoveryTime(): number {
+    private readGameplayRealTime(): number {
         const timerValue = Number(Laya.timer?.currTimer);
         return Number.isFinite(timerValue) ? timerValue : Date.now();
+    }
+
+    private readActiveGameplayTime(realNow: number = this.readGameplayRealTime()): number {
+        const currentPauseDuration = this.activeGameplayPauseStartedAt === null
+            ? 0
+            : Math.max(0, realNow - this.activeGameplayPauseStartedAt);
+        return realNow - this.activeGameplayPauseAccumulatedMs - currentPauseDuration;
+    }
+
+    private readDisappearRecoveryTime(): number {
+        return this.readActiveGameplayTime();
     }
 
     private getOrCreateDisappearRecoveryState(platform: any): {
@@ -2725,11 +2772,15 @@ export default class BallController extends Laya.Script {
         this.deathFragments = [];
     }
     private triggerDeathHaptics(): void {
+        if (!this.deathHapticsEnabled) return;
         try {
             const browserGlobal: any = typeof globalThis !== "undefined" ? globalThis : null;
-            const navigatorObject = browserGlobal?.navigator;
+            const layaNavigator: any = Laya.Browser?.window?.navigator;
+            const navigatorObject = typeof layaNavigator?.vibrate === "function"
+                ? layaNavigator
+                : browserGlobal?.navigator;
             if (typeof navigatorObject?.vibrate === "function") {
-                navigatorObject.vibrate(40);
+                navigatorObject.vibrate.call(navigatorObject, 40);
             }
         } catch (_) {
             // Haptics are best-effort and never participate in death semantics.
@@ -2843,6 +2894,15 @@ export default class BallController extends Laya.Script {
             this.repaintPlatformColor(p, "#00cc00");
             this.resetDisappearRecoveryState(p);
         }
+    }
+
+    public restartCurrentAttempt(): void {
+        this.finishGameplayPauseAccounting();
+        this.activeGameplayPauseStartedAt = null;
+        this.activeGameplayPauseAccumulatedMs = 0;
+        this.clearDeathReconstruction();
+        this.clearDeathFeedback();
+        this.respawn();
     }
 
     // 胜利后进入下一关：复用 respawn() 的全部重置，再重新随机平台布局

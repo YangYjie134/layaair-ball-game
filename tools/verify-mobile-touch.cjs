@@ -11,6 +11,7 @@ const tutorialPath = path.join(repoRoot, "src", "TouchTutorialUI.ts");
 const introPath = path.join(repoRoot, "src", "IntroUI.ts");
 const mainPath = path.join(repoRoot, "src", "Main.ts");
 const ballPath = path.join(repoRoot, "src", "BallController.ts");
+const scorePath = path.join(repoRoot, "src", "ScoreManager.ts");
 const scenePath = path.join(repoRoot, "assets", "Scene.ls");
 const settingsPath = path.join(repoRoot, "settings", "PlayerSettings.json");
 
@@ -122,6 +123,15 @@ function runStateSmoke() {
     state.clear();
     console.log("RIGHT + JUMP multitouch: PASS");
 
+    state.press("left", 33);
+    state.press("right", 33);
+    assert.equal(state.isHeld("left"), false,
+        "one pointer remained owned by LEFT after reassignment to RIGHT");
+    assert.equal(state.isHeld("right"), true,
+        "one pointer failed to transfer exclusively to RIGHT");
+    state.clear();
+    console.log("single-pointer LEFT/RIGHT exclusive ownership: PASS");
+
     let previousJump = false;
     let jumpEdges = 0;
     const sampleJump = () => {
@@ -189,12 +199,19 @@ function runLayoutSmoke() {
     assert.equal(layout.left.visibleSize, 88);
     assert.equal(layout.right.visibleSize, 88);
     assert.equal(layout.jump.visibleSize, 96);
-    assert.ok(layout.left.hitSize > layout.left.visibleSize);
-    assert.ok(layout.right.hitSize > layout.right.visibleSize);
-    assert.ok(layout.jump.hitSize > layout.jump.visibleSize);
+    assert.equal(layout.left.visibleX, 56);
+    assert.equal(layout.right.visibleX, 168);
+    assert.equal(layout.jump.visibleX, 1174);
+    assert.equal(layout.left.visibleY, 558);
+    assert.equal(layout.right.visibleY, 558);
+    assert.equal(layout.jump.visibleY, 548);
+    assert.equal(layout.left.hitSize, 110);
+    assert.equal(layout.right.hitSize, 110);
+    assert.equal(layout.jump.hitSize, 136);
 
     const directionGap = layout.right.hitX - (layout.left.hitX + layout.left.hitSize);
-    assert.equal(directionGap, 8);
+    assert.equal(directionGap, 2);
+    assert.ok(directionGap > 0, "LEFT and RIGHT hit areas overlap");
     for (const control of ["left", "right", "jump"]) {
         const bounds = layout[control];
         assert.ok(bounds.hitX >= 0 && bounds.hitY >= 0, `${control} hit area leaves the stage`);
@@ -609,13 +626,23 @@ function runStaticContracts() {
     const headBallSource = headFile("src/BallController.ts");
     const protectedStep = extractBetween(ballSource, "    public stepPhysics(", "    private levelTransitionHandler:");
     const headProtectedStep = extractBetween(headBallSource, "    public stepPhysics(", "    private levelTransitionHandler:");
-    assert.equal(protectedStep, headProtectedStep, "stepPhysics changed outside the authorized input seam");
+    assert.equal(
+        (protectedStep.match(/this\.readActiveGameplayTime\(time\.currTimer\(\)\)/g) || []).length,
+        2,
+        "stepPhysics must route both disappearing-platform timer reads through the Pause-aware clock",
+    );
+    const normalizedProtectedStep = protectedStep.replace(
+        /this\.readActiveGameplayTime\(time\.currTimer\(\)\)/g,
+        "time.currTimer()",
+    );
+    assert.equal(normalizedProtectedStep, headProtectedStep,
+        "stepPhysics changed outside the authorized input and Pause-aware clock seams");
 
     assert.match(ballSource, /left:\s*\(\)\s*=>\s*this\.isKeyDown\(Laya\.Keyboard\.LEFT,\s*Laya\.Keyboard\.A\)\s*\|\|\s*!!this\.touchInput\?\.left\(\)/);
     assert.match(ballSource, /right:\s*\(\)\s*=>\s*this\.isKeyDown\(Laya\.Keyboard\.RIGHT,\s*Laya\.Keyboard\.D\)\s*\|\|\s*!!this\.touchInput\?\.right\(\)/);
     assert.match(ballSource, /jump:\s*\(\)\s*=>\s*this\.isKeyDown\(Laya\.Keyboard\.W\)\s*\|\|\s*this\.isKeyDown\(Laya\.Keyboard\.UP\)\s*\|\|\s*!!this\.touchInput\?\.jump\(\)/);
     console.log("keyboard + touch input seam: PASS");
-    console.log("stepPhysics protected body unchanged: PASS");
+    console.log("stepPhysics protected body unchanged outside Pause-aware clock seam: PASS");
 
     const touchSource = read(touchPath);
     const headTouchSource = headFile("src/TouchController.ts");
@@ -632,6 +659,7 @@ function runStaticContracts() {
 
     const mainSource = read(mainPath);
     const introSource = read(introPath);
+    const scoreSource = read(scorePath);
     const tutorialSource = read(tutorialPath);
     assert.match(touchSource, /innerWidth/);
     assert.match(touchSource, /innerHeight/);
@@ -661,7 +689,7 @@ function runStaticContracts() {
     );
     assert.doesNotMatch(tutorialStartBranch, /BgmManager\.playBgm\(\)/,
         "Gameplay BGM still starts while the first mobile tutorial mounts");
-    assert.match(tutorialStartBranch, /if \(tutorial\) \{\s*this\.touchTutorial = tutorial;\s*return;\s*\}/);
+    assert.match(tutorialStartBranch, /if \(tutorial\) \{\s*this\.touchTutorial = tutorial;\s*this\.syncPausePresentation\(\);\s*return;\s*\}/);
     assert.equal((enterLevelOneSource.match(/BgmManager\.playBgm\(\)/g) || []).length, 1,
         "enterLevelOne must retain exactly one direct-start BGM call");
     assertSourceOrder(
@@ -676,11 +704,30 @@ function runStaticContracts() {
     );
     assert.match(introSource, /"CONTROL TEST  \/  HOW TO PLAY"/);
     assert.match(introSource, /"TOUCH CONTROLS  \/  HOW TO PLAY"/);
-    for (const keyId of ["W", "A", "D", "UP", "LEFT", "RIGHT", "R", "M"]) {
+    const physicalKeyIds = ["W", "A", "D", "UP", "LEFT", "RIGHT", "R", "M", "P"];
+    assert.equal(physicalKeyIds.length, 9);
+    for (const keyId of physicalKeyIds) {
         assert.match(introSource, new RegExp(`createKeycap\\("${keyId}"|createUtilityKey\\("${keyId}"`));
     }
+    assert.match(introSource, /createUtilityKey\("P",\s*"PAUSE"/);
+    assert.match(introSource, /code === "KeyP" \|\| keyCode === 80[\s\S]*?return "P"/);
+    assert.match(introSource,
+        /IntroUI\.mobileTouchSession\s*\?\s*"TAP ANYWHERE TO CONTINUE"\s*:\s*"CLICK \/ TAP ANYWHERE OR PRESS \[ ENTER \] TO CONTINUE"/);
+    assert.match(introSource,
+        /IntroUI\.mobileTouchSession\s*\?\s*"TAP AN OPTION TO SELECT"\s*:\s*"W \/ ↑\s+PREVIOUS\s+S \/ ↓\s+NEXT\s+ENTER\s+CONFIRM"/);
+    const mobileHelpSource = extractBetween(
+        introSource,
+        "    private static renderMobileHowToPlay(): void",
+        "    private static createTouchGuideCard(",
+    );
+    assert.match(mobileHelpSource, /MOVE \+ JUMP/);
+    assert.doesNotMatch(mobileHelpSource, /PRESS\s+[PMR]|KEYBOARD|\bPAUSE\b|\bESC\b|\bENTER\b/i);
     assert.match(introSource, /private static renderMobileHowToPlay\(\): void/);
     assert.match(introSource, /"MOVE"[\s\S]*?"LEFT\s+\/\s+RIGHT"[\s\S]*?"JUMP"/);
+    assert.match(scoreSource, /nextLevelLabel\.text\s*=\s*"NEXT LEVEL"/);
+    assert.match(scoreSource, /restartHint\.text\s*=\s*"PRESS R"[\s\S]*?restartHint\.visible\s*=\s*!this\.mobileTouchSession/);
+    assert.equal((tutorialSource.match(/"STEP [12]\s+\/\s+(?:MOVE|JUMP)"/g) || []).length, 2,
+        "first-use mobile tutorial must remain exactly MOVE then JUMP");
     assert.doesNotMatch(tutorialSource, /localStorage|sessionStorage|document\.cookie/);
     assert.doesNotMatch(tutorialSource, /charge|long-press|pause|settings|gesture/i);
     assert.match(tutorialSource, /root\.zOrder = 10002/);

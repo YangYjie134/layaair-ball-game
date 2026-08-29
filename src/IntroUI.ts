@@ -279,7 +279,9 @@ export class IntroUI {
         coverRoot.addChild(status);
 
         const prompt = IntroUI.createText(
-            "CLICK / TAP ANYWHERE OR PRESS [ ENTER ] TO CONTINUE",
+            IntroUI.mobileTouchSession
+                ? "TAP ANYWHERE TO CONTINUE"
+                : "CLICK / TAP ANYWHERE OR PRESS [ ENTER ] TO CONTINUE",
             18,
             "#E2E8F0",
             true
@@ -736,7 +738,9 @@ export class IntroUI {
         IntroUI.updateMainSelection();
 
         const hint = IntroUI.createText(
-            "W / ↑  PREVIOUS      S / ↓  NEXT      ENTER  CONFIRM",
+            IntroUI.mobileTouchSession
+                ? "TAP AN OPTION TO SELECT"
+                : "W / ↑  PREVIOUS      S / ↓  NEXT      ENTER  CONFIRM",
             15,
             "#94A3B8",
             false
@@ -749,19 +753,21 @@ export class IntroUI {
         hint.height = 28;
         IntroUI.viewRoot.addChild(hint);
 
-        const touchHint = IntroUI.createText(
-            "Mouse or touch an item to select and confirm",
-            15,
-            "#64748B",
-            false
-        );
-        touchHint.align = "center";
-        touchHint.valign = "middle";
-        touchHint.x = 40;
-        touchHint.y = 454;
-        touchHint.width = 820;
-        touchHint.height = 26;
-        IntroUI.viewRoot.addChild(touchHint);
+        if (!IntroUI.mobileTouchSession) {
+            const touchHint = IntroUI.createText(
+                "Mouse or touch an item to select and confirm",
+                15,
+                "#64748B",
+                false
+            );
+            touchHint.align = "center";
+            touchHint.valign = "middle";
+            touchHint.x = 40;
+            touchHint.y = 454;
+            touchHint.width = 820;
+            touchHint.height = 26;
+            IntroUI.viewRoot.addChild(touchHint);
+        }
 
         const footer = IntroUI.createText(
             "CORE LINK: STANDBY    //    INPUT CHANNEL: AVAILABLE",
@@ -843,8 +849,9 @@ export class IntroUI {
         IntroUI.createKeycap("LEFT", "←", 375, 253, 64, 48, "ALTERNATE");
         IntroUI.createKeycap("RIGHT", "→", 459, 253, 64, 48, "ALTERNATE");
 
-        IntroUI.createUtilityKey("R", "RESTART", 626, 194);
-        IntroUI.createUtilityKey("M", "MUTE", 626, 262);
+        IntroUI.createUtilityKey("R", "RESTART", 626, 184);
+        IntroUI.createUtilityKey("M", "MUTE", 626, 242);
+        IntroUI.createUtilityKey("P", "PAUSE", 626, 300);
 
         const note = IntroUI.createText(
             "PHYSICAL KEYBOARD TEST  ·  Use a keyboard to test key input.",
@@ -854,20 +861,20 @@ export class IntroUI {
         );
         note.align = "center";
         note.x = 80;
-        note.y = 341;
+        note.y = 359;
         note.width = 740;
         note.height = 22;
         IntroUI.viewRoot.addChild(note);
 
         const reference = IntroUI.createText(
-            "MOVE  A / D or ← / →      JUMP  W or ↑      R  RESTART      M  MUTE",
+            "MOVE  A / D or ← / →    JUMP  W or ↑    R  RESTART    M  MUTE    P  PAUSE / TOP-RIGHT ICON",
             14,
             "#94A3B8",
             false
         );
         reference.align = "center";
         reference.x = 55;
-        reference.y = 374;
+        reference.y = 386;
         reference.width = 790;
         reference.height = 22;
         IntroUI.viewRoot.addChild(reference);
@@ -991,7 +998,7 @@ export class IntroUI {
         IntroUI.viewRoot.addChild(hint);
 
         const footer = IntroUI.createText(
-            "TOUCH LINK READY    //    LEFT + RIGHT + JUMP",
+            "TOUCH LINK READY    //    MOVE + JUMP",
             12,
             "#35627A",
             true
@@ -1516,6 +1523,7 @@ export class IntroUI {
         if (code === "ArrowRight" || keyCode === 39 || key === "ArrowRight" || key === "Right") return "RIGHT";
         if (code === "KeyR" || keyCode === 82 || key === "r" || key === "R") return "R";
         if (code === "KeyM" || keyCode === 77 || key === "m" || key === "M") return "M";
+        if (code === "KeyP" || keyCode === 80 || key === "p" || key === "P") return "P";
         return null;
     }
 

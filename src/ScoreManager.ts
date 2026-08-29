@@ -100,6 +100,8 @@ export class ScoreManager {
     private nextLevelHandler: (() => void) | null = null;
     private nextLevelButton: any = null;
     private nextLevelLabel: any = null;
+    private restartHint: any = null;
+    private mobileTouchSession: boolean = false;
     private winGoldenAura: any = null;
     private winGoldenGlyphSystems: WinGlyphAuraSystem[] = [];
     private winGoldenLoopStarted: boolean = false;
@@ -147,6 +149,13 @@ export class ScoreManager {
 
     public setNextLevelHandler(handler: () => void): void {
         this.nextLevelHandler = handler;
+    }
+
+    public setMobileTouchSession(mobileTouchSession: boolean): void {
+        this.mobileTouchSession = mobileTouchSession;
+        if (this.restartHint) {
+            this.restartHint.visible = !mobileTouchSession;
+        }
     }
 
     // 创建分数显示文本
@@ -346,6 +355,7 @@ export class ScoreManager {
         this.winCard.addChild(nextLevelButton);
 
         const restartHint = new Laya.Text();
+        this.restartHint = restartHint;
         restartHint.text = "PRESS R";
         restartHint.font = "Arial";
         restartHint.fontSize = 13;
@@ -357,6 +367,7 @@ export class ScoreManager {
         restartHint.align = "center";
         restartHint.valign = "middle";
         restartHint.mouseEnabled = false;
+        restartHint.visible = !this.mobileTouchSession;
         this.winCard.addChild(restartHint);
 
         this.positionWinCard();
