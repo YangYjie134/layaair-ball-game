@@ -49,6 +49,8 @@ interface IntroUILifecycleCallbacks {
     onHowToPlayEntered?: () => void;
 }
 
+type IntroMenuAction = "START" | "HOW_TO_PLAY" | "BACK";
+
 export class IntroUI {
     private static readonly COVER: "COVER" = "COVER";
     private static readonly MAIN_MENU: "MAIN_MENU" = "MAIN_MENU";
@@ -57,6 +59,7 @@ export class IntroUI {
     private static readonly PANEL_HEIGHT: number = 580;
     private static readonly KEY_RELEASE_DECAY_MS: number = 190;
     private static readonly COVER_MENU_GUARD_MS: number = 450;
+    private static readonly MOBILE_MENU_PRESS_MIN_MS: number = 120;
     // First-pass runtime candidates. Human runtime validation is still required.
     private static readonly FULL_CHARGE_MS: number = 1200;
     private static readonly DECAY_MS: number = 300;
@@ -110,6 +113,11 @@ export class IntroUI {
     private static viewRoot: any = null;
     private static menuItems: any[] = [];
     private static boundItems: any[] = [];
+    private static pressedMenuItem: any = null;
+    private static menuPressStartedAt: number = 0;
+    private static activeMenuPointerId: number | null = null;
+    private static pendingMenuActivation: IntroMenuAction | null = null;
+    private static menuPressReleased: boolean = false;
     private static keycaps: { [key: string]: IntroKeycapVisual } = {};
     private static keyFeedbackLoopActive: boolean = false;
 
@@ -1144,6 +1152,8 @@ export class IntroUI {
         for (const item of IntroUI.menuItems) {
             item.on(Laya.Event.MOUSE_OVER, IntroUI, IntroUI.onMenuHover);
             item.on(Laya.Event.MOUSE_DOWN, IntroUI, IntroUI.onMenuPointerDown);
+            item.on(Laya.Event.MOUSE_UP, IntroUI, IntroUI.onMenuPointerUp);
+            item.on(Laya.Event.MOUSE_OUT, IntroUI, IntroUI.onMenuPointerCancel);
             item.on(Laya.Event.CLICK, IntroUI, IntroUI.onMenuClick);
             IntroUI.boundItems.push(item);
         }
@@ -1296,7 +1306,10 @@ export class IntroUI {
         backButton.y = 422;
         IntroUI.viewRoot.addChild(backButton);
         IntroUI.updateButton(backButton, true);
-        backButton.on(Laya.Event.CLICK, IntroUI, IntroUI.onBackClick);
+        backButton.on(Laya.Event.MOUSE_DOWN, IntroUI, IntroUI.onMenuPointerDown);
+        backButton.on(Laya.Event.MOUSE_UP, IntroUI, IntroUI.onMenuPointerUp);
+        backButton.on(Laya.Event.MOUSE_OUT, IntroUI, IntroUI.onMenuPointerCancel);
+        backButton.on(Laya.Event.CLICK, IntroUI, IntroUI.onMenuClick);
         IntroUI.boundItems.push(backButton);
 
         const hint = IntroUI.createText("ENTER or ESC  ·  BACK", 14, "#64748B", false);
@@ -1397,7 +1410,10 @@ export class IntroUI {
         backButton.y = 422;
         IntroUI.viewRoot.addChild(backButton);
         IntroUI.updateButton(backButton, true);
-        backButton.on(Laya.Event.CLICK, IntroUI, IntroUI.onBackClick);
+        backButton.on(Laya.Event.MOUSE_DOWN, IntroUI, IntroUI.onMenuPointerDown);
+        backButton.on(Laya.Event.MOUSE_UP, IntroUI, IntroUI.onMenuPointerUp);
+        backButton.on(Laya.Event.MOUSE_OUT, IntroUI, IntroUI.onMenuPointerCancel);
+        backButton.on(Laya.Event.CLICK, IntroUI, IntroUI.onMenuClick);
         IntroUI.boundItems.push(backButton);
 
         const hint = IntroUI.createText("TAP BACK TO RETURN", 14, "#64748B", false);
@@ -1660,6 +1676,11 @@ export class IntroUI {
         button.height = height + 5;
         button.mouseEnabled = true;
         button.menuKind = kind;
+        button.menuAction = kind === "PRIMARY"
+            ? "START"
+            : kind === "SECONDARY"
+                ? "HOW_TO_PLAY"
+                : "BACK";
 
         const glow = new Laya.Sprite();
         glow.x = -4;
@@ -1692,6 +1713,7 @@ export class IntroUI {
         button.menuFace = face;
         button.menuLabel = label;
         button.menuAccent = accent;
+        button.menuPressed = false;
 
         return button;
     }
@@ -1704,10 +1726,13 @@ export class IntroUI {
 
     private static updateButton(button: any, selected: boolean): void {
         const kind = button.menuKind || "BACK";
+        const pressed = button.menuPressed === true;
         let fill = "#0B1427";
         let border = "#475569";
         let accent = "#475569";
         let glowAlpha = 0.05;
+        let borderWidth = 2;
+        let accentHeight = 3;
 
         if (kind === "PRIMARY") {
             fill = selected ? "#075A9D" : "#0B3556";
@@ -1726,6 +1751,16 @@ export class IntroUI {
             glowAlpha = 0.12;
         }
 
+        if (pressed) {
+            fill = kind === "PRIMARY" ? "#0284C7" : "#4C1D95";
+            border = kind === "PRIMARY" ? "#ECFEFF" : "#DDD6FE";
+            accent = kind === "PRIMARY" ? "#67E8F9" : "#C4B5FD";
+            glowAlpha = kind === "PRIMARY" ? 0.62 : 0.52;
+            borderWidth = 3;
+            accentHeight = 5;
+        }
+
+        button.menuFace.y = pressed ? 5 : 0;
         button.menuFace.graphics.clear();
         button.menuFace.graphics.drawPoly(
             0,
@@ -1733,10 +1768,10 @@ export class IntroUI {
             IntroUI.cutCornerPoints(button.width, button.height - 5, 10),
             fill,
             border,
-            2
+            borderWidth
         );
         button.menuAccent.graphics.clear();
-        button.menuAccent.graphics.drawRect(20, 0, button.width - 40, 3, accent);
+        button.menuAccent.graphics.drawRect(20, 0, button.width - 40, accentHeight, accent);
         button.menuGlow.alpha = glowAlpha;
         button.menuLabel.color = selected || kind === "PRIMARY" ? "#FFFFFF" : "#CBD5E1";
         button.menuLabel.bold = selected || kind === "PRIMARY";
@@ -1752,37 +1787,228 @@ export class IntroUI {
     }
 
     private static onMenuClick(event: any): void {
+        if (!IntroUI.mobileTouchSession) {
+            IntroUI.resetMenuPressedState();
+        }
+        const target = event?.currentTarget || event?.target;
+        const action = target?.menuAction as IntroMenuAction | undefined;
         if (
-            IntroUI.mainMenuActivationGuarded
-            || IntroUI.menuPointerActivationState !== "ARMED"
+            IntroUI.boundItems.indexOf(target) < 0
+            || (action !== "START" && action !== "HOW_TO_PLAY" && action !== "BACK")
+        ) {
+            if (IntroUI.mobileTouchSession) {
+                IntroUI.cancelPendingMenuActivation();
+            }
+            return;
+        }
+
+        if (
+            action !== "BACK"
+            && (
+                IntroUI.mainMenuActivationGuarded
+                || IntroUI.menuPointerActivationState !== "ARMED"
+            )
+        ) {
+            if (IntroUI.mobileTouchSession) {
+                IntroUI.cancelPendingMenuActivation();
+            }
+            IntroUI.stopEvent(event);
+            return;
+        }
+
+        const index = IntroUI.menuItems.indexOf(target);
+
+        if (!IntroUI.mobileTouchSession) {
+            IntroUI.activateMenuAction(action);
+            return;
+        }
+
+        if (
+            IntroUI.pendingMenuActivation !== null
+            || IntroUI.pressedMenuItem !== target
         ) {
             IntroUI.stopEvent(event);
             return;
         }
 
-        const target = event?.currentTarget || event?.target;
-        const index = IntroUI.menuItems.indexOf(target);
-        if (index !== 0 && index !== 1) {
-            return;
+        if (index === 0 || index === 1) {
+            IntroUI.selectedIndex = index;
+            IntroUI.updateMainSelection();
         }
-
-        IntroUI.selectedIndex = index;
-        IntroUI.updateMainSelection();
-        if (index === 0) {
-            IntroUI.acceptStart();
+        IntroUI.pendingMenuActivation = action;
+        const elapsedMs = Math.max(0, Date.now() - IntroUI.menuPressStartedAt);
+        if (elapsedMs >= IntroUI.MOBILE_MENU_PRESS_MIN_MS) {
+            IntroUI.completeMobileMenuPress();
         } else {
-            IntroUI.enterHowToPlay();
+            IntroUI.scheduleMobileMenuPressCompletion(
+                IntroUI.MOBILE_MENU_PRESS_MIN_MS - elapsedMs
+            );
         }
+        IntroUI.stopEvent(event);
     }
 
     private static onMenuPointerDown(event: any): void {
         if (IntroUI.menuPointerActivationState === "WAITING_FOR_FRESH_DOWN") {
             IntroUI.menuPointerActivationState = "ARMED";
             IntroUI.blockedCoverPointerId = null;
-            return;
         }
         if (IntroUI.menuPointerActivationState === "WAITING_FOR_OLD_RELEASE") {
+            IntroUI.cancelPendingMenuActivation();
             IntroUI.stopEvent(event);
+            return;
+        }
+        const target = event?.currentTarget || event?.target;
+        const action = target?.menuAction as IntroMenuAction | undefined;
+        const index = IntroUI.menuItems.indexOf(target);
+        if (
+            IntroUI.boundItems.indexOf(target) < 0
+            || (action !== "START" && action !== "HOW_TO_PLAY" && action !== "BACK")
+        ) {
+            return;
+        }
+
+        if (
+            IntroUI.pressedMenuItem
+            || IntroUI.pendingMenuActivation !== null
+        ) {
+            IntroUI.stopEvent(event);
+            return;
+        }
+
+        IntroUI.pressedMenuItem = target;
+        IntroUI.menuPressStartedAt = Date.now();
+        IntroUI.activeMenuPointerId = IntroUI.resolvePointerId(event);
+        IntroUI.menuPressReleased = false;
+        target.menuPressed = true;
+        if (index === 0 || index === 1) {
+            IntroUI.selectedIndex = index;
+            IntroUI.updateMainSelection();
+        } else {
+            IntroUI.updateButton(target, true);
+        }
+    }
+
+    private static onMenuPointerUp(event: any = null): void {
+        if (
+            !IntroUI.pressedMenuItem
+            || !IntroUI.menuEventMatchesActivePointer(event)
+        ) {
+            return;
+        }
+
+        if (!IntroUI.mobileTouchSession) {
+            IntroUI.cancelPendingMenuActivation();
+            return;
+        }
+
+        IntroUI.menuPressReleased = true;
+        const elapsedMs = Math.max(0, Date.now() - IntroUI.menuPressStartedAt);
+        IntroUI.scheduleMobileMenuPressCompletion(
+            Math.max(0, IntroUI.MOBILE_MENU_PRESS_MIN_MS - elapsedMs)
+        );
+    }
+
+    private static onMenuPointerCancel(event: any = null): void {
+        if (
+            !IntroUI.pressedMenuItem
+            || !IntroUI.menuEventMatchesActivePointer(event)
+        ) {
+            return;
+        }
+
+        // LayaAir emits MOUSE_OUT after CLICK for a normal touchend. That final
+        // rollover cleanup is not a cancellation; genuine out/touchcancel/blur is.
+        const nativeType = String(event?.nativeEvent?.type || "").toLowerCase();
+        if (
+            nativeType === "touchend"
+            && IntroUI.menuPressReleased
+            && IntroUI.pendingMenuActivation !== null
+        ) {
+            return;
+        }
+
+        IntroUI.cancelPendingMenuActivation();
+    }
+
+    private static menuEventMatchesActivePointer(event: any): boolean {
+        if (IntroUI.activeMenuPointerId === null) {
+            return true;
+        }
+        const hasPointerIdentity = event?.touchId !== undefined || event?.pointerId !== undefined;
+        return !hasPointerIdentity
+            || IntroUI.resolvePointerId(event) === IntroUI.activeMenuPointerId;
+    }
+
+    private static scheduleMobileMenuPressCompletion(delayMs: number): void {
+        Laya.timer.clear(IntroUI, IntroUI.completeMobileMenuPress);
+        Laya.timer.once(
+            Math.max(0, delayMs),
+            IntroUI,
+            IntroUI.completeMobileMenuPress
+        );
+    }
+
+    private static completeMobileMenuPress(): void {
+        const activation = IntroUI.pendingMenuActivation;
+        Laya.timer.clear(IntroUI, IntroUI.completeMobileMenuPress);
+        IntroUI.pendingMenuActivation = null;
+        IntroUI.menuPressStartedAt = 0;
+        IntroUI.activeMenuPointerId = null;
+        IntroUI.menuPressReleased = false;
+        IntroUI.resetMenuPressedState();
+
+        if (
+            activation !== null
+            && IntroUI.mobileTouchSession
+            && (
+                (activation === "BACK" && IntroUI.view === IntroUI.HOW_TO_PLAY)
+                || (activation !== "BACK" && IntroUI.view === IntroUI.MAIN_MENU)
+            )
+        ) {
+            IntroUI.activateMenuAction(activation);
+        }
+    }
+
+    private static cancelPendingMenuActivation(): void {
+        Laya.timer.clear(IntroUI, IntroUI.completeMobileMenuPress);
+        IntroUI.pendingMenuActivation = null;
+        IntroUI.menuPressStartedAt = 0;
+        IntroUI.activeMenuPointerId = null;
+        IntroUI.menuPressReleased = false;
+        IntroUI.resetMenuPressedState();
+    }
+
+    private static resetMenuPressedState(): void {
+        const pressedItem = IntroUI.pressedMenuItem;
+        if (!pressedItem) {
+            return;
+        }
+
+        pressedItem.menuPressed = false;
+        IntroUI.pressedMenuItem = null;
+        const index = IntroUI.menuItems.indexOf(pressedItem);
+        if (index >= 0) {
+            IntroUI.updateMainSelection();
+        } else if (pressedItem.menuFace) {
+            IntroUI.updateButton(pressedItem, true);
+        }
+    }
+
+    private static activateMenuAction(action: IntroMenuAction): void {
+        if (action === "BACK") {
+            IntroUI.onBackClick();
+            return;
+        }
+        IntroUI.activateMenuSelection(action === "START" ? 0 : 1);
+    }
+
+    private static activateMenuSelection(index: 0 | 1): void {
+        IntroUI.selectedIndex = index;
+        IntroUI.updateMainSelection();
+        if (index === 0) {
+            IntroUI.acceptStart();
+        } else {
+            IntroUI.enterHowToPlay();
         }
     }
 
@@ -2153,7 +2379,9 @@ export class IntroUI {
         Laya.stage.on(Laya.Event.KEY_DOWN, IntroUI, IntroUI.onKeyDown);
         Laya.stage.on(Laya.Event.KEY_UP, IntroUI, IntroUI.onKeyUp);
         Laya.stage.on(Laya.Event.MOUSE_UP, IntroUI, IntroUI.onIntroPointerUp);
+        Laya.stage.on(Laya.Event.MOUSE_UP, IntroUI, IntroUI.onMenuPointerUp);
         Laya.stage.on(Laya.Event.BLUR, IntroUI, IntroUI.onFocusLost);
+        Laya.stage.on(Laya.Event.BLUR, IntroUI, IntroUI.onMenuPointerCancel);
         IntroUI.keyboardBound = true;
     }
 
@@ -2164,11 +2392,14 @@ export class IntroUI {
         Laya.stage.off(Laya.Event.KEY_DOWN, IntroUI, IntroUI.onKeyDown);
         Laya.stage.off(Laya.Event.KEY_UP, IntroUI, IntroUI.onKeyUp);
         Laya.stage.off(Laya.Event.MOUSE_UP, IntroUI, IntroUI.onIntroPointerUp);
+        Laya.stage.off(Laya.Event.MOUSE_UP, IntroUI, IntroUI.onMenuPointerUp);
         Laya.stage.off(Laya.Event.BLUR, IntroUI, IntroUI.onFocusLost);
+        Laya.stage.off(Laya.Event.BLUR, IntroUI, IntroUI.onMenuPointerCancel);
         IntroUI.keyboardBound = false;
     }
 
     private static clearView(): void {
+        IntroUI.cancelPendingMenuActivation();
         IntroUI.resetKeyFeedback();
         IntroUI.stopKeyFeedbackLoop();
         IntroUI.keycaps = {};
@@ -2176,6 +2407,8 @@ export class IntroUI {
         for (const item of IntroUI.boundItems) {
             item.off(Laya.Event.MOUSE_OVER, IntroUI, IntroUI.onMenuHover);
             item.off(Laya.Event.MOUSE_DOWN, IntroUI, IntroUI.onMenuPointerDown);
+            item.off(Laya.Event.MOUSE_UP, IntroUI, IntroUI.onMenuPointerUp);
+            item.off(Laya.Event.MOUSE_OUT, IntroUI, IntroUI.onMenuPointerCancel);
             item.off(Laya.Event.CLICK, IntroUI, IntroUI.onMenuClick);
             item.off(Laya.Event.CLICK, IntroUI, IntroUI.onBackClick);
         }

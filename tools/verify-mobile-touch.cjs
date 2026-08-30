@@ -86,6 +86,32 @@ function loadTutorialModule(laya, touchModule) {
     return module.exports;
 }
 
+function loadIntroModule(laya, readNow = Date.now) {
+    const compiled = ts.transpileModule(read(introPath), {
+        compilerOptions: {
+            module: ts.ModuleKind.CommonJS,
+            target: ts.ScriptTarget.ES2019,
+        },
+        fileName: introPath,
+    }).outputText;
+    const module = { exports: {} };
+    class RuntimeDate extends Date {
+        static now() {
+            return readNow();
+        }
+    }
+    vm.runInNewContext(compiled, {
+        module,
+        exports: module.exports,
+        console,
+        Date: RuntimeDate,
+        Math,
+        Number,
+        Laya: laya,
+    }, { filename: "IntroUI.js" });
+    return module.exports;
+}
+
 function runStateSmoke() {
     const { TouchInputState } = loadTouchModule();
     const state = new TouchInputState();
@@ -251,6 +277,8 @@ function createMockLaya(initialWidth = 1334, initialHeight = 750) {
             this.y = 0;
             this.width = 0;
             this.height = 0;
+            this.scaleX = 1;
+            this.scaleY = 1;
             this.alpha = 1;
             this.visible = true;
             this.children = [];
@@ -326,6 +354,8 @@ function createMockLaya(initialWidth = 1334, initialHeight = 750) {
     };
 
     const scheduled = [];
+    const frameLoops = [];
+    let currentTime = 0;
     const stage = new Sprite();
     stage.width = 1334;
     stage.height = 750;
@@ -336,6 +366,8 @@ function createMockLaya(initialWidth = 1334, initialHeight = 750) {
         MOUSE_OVER: "mouseover",
         MOUSE_OUT: "mouseout",
         CLICK: "click",
+        KEY_DOWN: "keydown",
+        KEY_UP: "keyup",
         BLUR: "blur",
         VISIBILITY_CHANGE: "visibilitychange",
     };
@@ -347,8 +379,12 @@ function createMockLaya(initialWidth = 1334, initialHeight = 750) {
         Browser: { window: browserWindow, clientWidth: initialWidth, clientHeight: initialHeight },
         InputManager: { multiTouchEnabled: false },
         timer: {
+            frameLoop(delay, caller, method) {
+                frameLoops.push({ delay, caller, method });
+            },
             once(delay, caller, method) {
-                scheduled.push({ delay, caller, method });
+                const safeDelay = Math.max(0, Number(delay) || 0);
+                scheduled.push({ delay: safeDelay, dueAt: currentTime + safeDelay, caller, method });
             },
             clear(caller, method) {
                 for (let index = scheduled.length - 1; index >= 0; index--) {
@@ -356,10 +392,18 @@ function createMockLaya(initialWidth = 1334, initialHeight = 750) {
                         scheduled.splice(index, 1);
                     }
                 }
+                for (let index = frameLoops.length - 1; index >= 0; index--) {
+                    if (frameLoops[index].caller === caller && frameLoops[index].method === method) {
+                        frameLoops.splice(index, 1);
+                    }
+                }
             },
             clearAll(caller) {
                 for (let index = scheduled.length - 1; index >= 0; index--) {
                     if (scheduled[index].caller === caller) scheduled.splice(index, 1);
+                }
+                for (let index = frameLoops.length - 1; index >= 0; index--) {
+                    if (frameLoops[index].caller === caller) frameLoops.splice(index, 1);
                 }
             },
         },
@@ -380,9 +424,38 @@ function createMockLaya(initialWidth = 1334, initialHeight = 750) {
         },
         runTimers() {
             while (scheduled.length > 0) {
+                scheduled.sort((left, right) => left.dueAt - right.dueAt);
                 const task = scheduled.shift();
+                currentTime = Math.max(currentTime, task.dueAt);
                 task.method.call(task.caller);
             }
+        },
+        setTime(value) {
+            currentTime = Number(value);
+        },
+        advanceTime(deltaMs) {
+            currentTime += Number(deltaMs);
+            while (true) {
+                let nextIndex = -1;
+                for (let index = 0; index < scheduled.length; index++) {
+                    if (
+                        scheduled[index].dueAt <= currentTime
+                        && (nextIndex < 0 || scheduled[index].dueAt < scheduled[nextIndex].dueAt)
+                    ) {
+                        nextIndex = index;
+                    }
+                }
+                if (nextIndex < 0) break;
+                const [task] = scheduled.splice(nextIndex, 1);
+                task.method.call(task.caller);
+            }
+        },
+        now() {
+            return currentTime;
+        },
+        nextTimerDelay() {
+            if (scheduled.length === 0) return null;
+            return Math.max(0, Math.min(...scheduled.map((task) => task.dueAt)) - currentTime);
         },
         scheduledCount() {
             return scheduled.length;
@@ -403,6 +476,581 @@ function hasBorder(node, color) {
     return node.graphics.operations.some((operation) => (
         operation.method === "drawPoly" && operation.args[4] === color
     ));
+}
+
+function drawnPolyBorder(node) {
+    const draw = [...node.graphics.operations].reverse()
+        .find((operation) => operation.method === "drawPoly");
+    return draw?.args[4];
+}
+
+function drawnPolyFill(node) {
+    const draw = [...node.graphics.operations].reverse()
+        .find((operation) => operation.method === "drawPoly");
+    return draw?.args[3];
+}
+
+function drawnPolyLineWidth(node) {
+    const draw = [...node.graphics.operations].reverse()
+        .find((operation) => operation.method === "drawPoly");
+    return draw?.args[5];
+}
+
+function drawnRectFill(node) {
+    const draw = [...node.graphics.operations].reverse()
+        .find((operation) => operation.method === "drawRect");
+    return draw?.args[4];
+}
+
+function drawnRectHeight(node) {
+    const draw = [...node.graphics.operations].reverse()
+        .find((operation) => operation.method === "drawRect");
+    return draw?.args[3];
+}
+
+function outerButtonGeometry(button) {
+    return {
+        x: button.x,
+        y: button.y,
+        width: button.width,
+        height: button.height,
+        scaleX: button.scaleX,
+        scaleY: button.scaleY,
+        hitArea: button.hitArea ?? null,
+        mouseEnabled: button.mouseEnabled,
+    };
+}
+
+function mountIntroMainMenu(mobileTouchSession, initialNow = 1000) {
+    const mock = createMockLaya(844, 390);
+    mock.setTime(initialNow);
+    const { IntroUI } = loadIntroModule(mock.laya, () => mock.now());
+    const activations = [];
+    IntroUI.mobileTouchSession = mobileTouchSession;
+    IntroUI.view = "MAIN_MENU";
+    IntroUI.startHandler = () => activations.push("START");
+    IntroUI.lifecycleCallbacks = {
+        onMainMenuEntered: () => activations.push("BACK"),
+        onHowToPlayEntered: () => activations.push("HOW_TO_PLAY"),
+    };
+    IntroUI.panel = new mock.laya.Sprite();
+    mock.laya.stage.addChild(IntroUI.panel);
+    IntroUI.renderMainMenu();
+    IntroUI.bindKeyboard();
+    return { mock, IntroUI, activations };
+}
+
+function mountIntroHowToPlay(mobileTouchSession, initialNow = 1000) {
+    const mounted = mountIntroMainMenu(mobileTouchSession, initialNow);
+    mounted.IntroUI.enterHowToPlay();
+    mounted.activations.length = 0;
+    const backButton = mounted.IntroUI.boundItems.find((item) => item.menuAction === "BACK");
+    assert.ok(backButton, "IntroUI HOW TO PLAY view did not expose its owned BACK navigation button");
+    return { ...mounted, backButton };
+}
+
+function runIntroMainMenuPressSmoke() {
+    const mobile = mountIntroMainMenu(true);
+    const expectedGeometry = [
+        { x: 130, y: 220, width: 640, height: 83, scaleX: 1, scaleY: 1, hitArea: null, mouseEnabled: true },
+        { x: 130, y: 326, width: 640, height: 69, scaleX: 1, scaleY: 1, hitArea: null, mouseEnabled: true },
+    ];
+    const expectedPressedFills = ["#0284C7", "#4C1D95"];
+    assert.deepEqual(Array.from(mobile.IntroUI.menuItems, outerButtonGeometry), expectedGeometry,
+        "main-menu outer button geometry changed before interaction");
+
+    for (let index = 0; index < mobile.IntroUI.menuItems.length; index++) {
+        const button = mobile.IntroUI.menuItems[index];
+        const pointerEvent = { currentTarget: button, target: button, touchId: 70 + index, stopPropagation() {} };
+        button.emit(mobile.mock.laya.Event.MOUSE_OVER, pointerEvent);
+        const outerBefore = outerButtonGeometry(button);
+        const normalGlow = button.menuGlow.alpha;
+        const normalFill = drawnPolyFill(button.menuFace);
+        const normalBorder = drawnPolyBorder(button.menuFace);
+        const normalBorderWidth = drawnPolyLineWidth(button.menuFace);
+        const normalAccent = drawnRectFill(button.menuAccent);
+        const normalAccentHeight = drawnRectHeight(button.menuAccent);
+
+        button.emit(mobile.mock.laya.Event.MOUSE_DOWN, pointerEvent);
+        assert.equal(button.menuFace.y, 5, "mobile press did not move only the internal face by 5px");
+        assert.equal(drawnPolyFill(button.menuFace), expectedPressedFills[index],
+            "mobile press did not apply the distinct per-button pressed fill");
+        assert.notEqual(drawnPolyFill(button.menuFace), normalFill,
+            "mobile press retained the normal fill");
+        assert.ok(button.menuGlow.alpha > normalGlow, "mobile press did not strengthen the existing glow");
+        assert.notEqual(drawnPolyBorder(button.menuFace), normalBorder,
+            "mobile press did not strengthen the existing border seam");
+        assert.ok(drawnPolyLineWidth(button.menuFace) > normalBorderWidth,
+            "mobile press did not strengthen the existing border width");
+        assert.notEqual(drawnRectFill(button.menuAccent), normalAccent,
+            "mobile press did not strengthen the existing accent seam");
+        assert.ok(drawnRectHeight(button.menuAccent) > normalAccentHeight,
+            "mobile press did not strengthen the existing accent height");
+        assert.deepEqual(outerButtonGeometry(button), outerBefore,
+            "mobile press changed outer button geometry or hit state");
+
+        mobile.mock.advanceTime(20);
+        button.emit(mobile.mock.laya.Event.MOUSE_UP, pointerEvent);
+        assert.equal(button.menuFace.y, 5,
+            "mobile release removed pressed feedback before the minimum visible interval");
+        assert.equal(mobile.mock.scheduledCount(), 1,
+            "mobile release did not queue one finite pressed-state completion");
+        mobile.mock.advanceTime(100);
+        assert.equal(button.menuFace.y, 0, "mobile release did not restore the internal face");
+        assert.equal(button.menuGlow.alpha, normalGlow, "mobile release did not restore the normal glow");
+        assert.equal(drawnPolyFill(button.menuFace), normalFill,
+            "mobile release did not restore the normal fill");
+        assert.equal(drawnPolyBorder(button.menuFace), normalBorder,
+            "mobile release did not restore the normal border");
+        assert.equal(drawnPolyLineWidth(button.menuFace), normalBorderWidth,
+            "mobile release did not restore the normal border width");
+        assert.equal(drawnRectFill(button.menuAccent), normalAccent,
+            "mobile release did not restore the normal accent");
+        assert.equal(drawnRectHeight(button.menuAccent), normalAccentHeight,
+            "mobile release did not restore the normal accent height");
+        assert.deepEqual(outerButtonGeometry(button), outerBefore,
+            "mobile release changed outer button geometry or hit state");
+
+        button.emit(mobile.mock.laya.Event.MOUSE_DOWN, pointerEvent);
+        button.emit(mobile.mock.laya.Event.MOUSE_OUT, pointerEvent);
+        assert.equal(button.menuFace.y, 0, "mobile out/cancel did not restore the internal face");
+        assert.equal(button.menuGlow.alpha, normalGlow, "mobile out/cancel did not restore the normal glow");
+        assert.deepEqual(outerButtonGeometry(button), outerBefore,
+            "mobile out/cancel changed outer button geometry or hit state");
+    }
+
+    const releaseOutsideButton = mobile.IntroUI.menuItems[0];
+    releaseOutsideButton.emit(mobile.mock.laya.Event.MOUSE_DOWN, {
+        currentTarget: releaseOutsideButton,
+        target: releaseOutsideButton,
+        touchId: 80,
+        stopPropagation() {},
+    });
+    mobile.mock.laya.stage.emit(mobile.mock.laya.Event.MOUSE_UP, { touchId: 80, stopPropagation() {} });
+    assert.equal(releaseOutsideButton.menuFace.y, 5,
+        "stage-level mobile release removed feedback before the minimum interval");
+    mobile.mock.advanceTime(120);
+    assert.equal(releaseOutsideButton.menuFace.y, 0,
+        "stage-level mobile release did not clear pressed feedback");
+
+    const blurButton = mobile.IntroUI.menuItems[1];
+    blurButton.emit(mobile.mock.laya.Event.MOUSE_DOWN, {
+        currentTarget: blurButton,
+        target: blurButton,
+        touchId: 81,
+        stopPropagation() {},
+    });
+    mobile.mock.laya.stage.emit(mobile.mock.laya.Event.BLUR);
+    assert.equal(blurButton.menuFace.y, 0, "existing blur cleanup left mobile pressed feedback active");
+
+    const teardownButton = mobile.IntroUI.menuItems[0];
+    teardownButton.emit(mobile.mock.laya.Event.MOUSE_DOWN, {
+        currentTarget: teardownButton,
+        target: teardownButton,
+        touchId: 82,
+        stopPropagation() {},
+    });
+    mobile.IntroUI.renderMainMenu();
+    assert.equal(teardownButton.menuFace.y, 0, "clearView destroyed a still-pressed visual face");
+    assert.equal(mobile.IntroUI.pressedMenuItem, null, "clearView retained a stale pressed item reference");
+    assert.equal(mobile.IntroUI.menuItems.every((button) => button.menuFace.y === 0 && !button.menuPressed), true,
+        "new main-menu view inherited stale pressed state");
+    mobile.IntroUI.unbindKeyboard();
+
+    const quick = mountIntroMainMenu(true, 2000);
+    const quickButton = quick.IntroUI.menuItems[0];
+    const quickEvent = {
+        currentTarget: quickButton,
+        target: quickButton,
+        touchId: 90,
+        nativeEvent: { type: "touchend" },
+        stopPropagation() {},
+    };
+    quickButton.emit(quick.mock.laya.Event.MOUSE_DOWN, quickEvent);
+    quick.mock.advanceTime(35);
+    quickButton.emit(quick.mock.laya.Event.MOUSE_UP, quickEvent);
+    quick.mock.laya.stage.emit(quick.mock.laya.Event.MOUSE_UP, quickEvent);
+    quickButton.emit(quick.mock.laya.Event.CLICK, quickEvent);
+    quickButton.emit(quick.mock.laya.Event.MOUSE_OUT, quickEvent);
+    assert.deepEqual(quick.activations, [], "quick mobile click activated before 120ms");
+    assert.equal(quickButton.menuFace.y, 5,
+        "quick mobile click did not retain its pressed face through the latch");
+    assert.equal(quick.mock.nextTimerDelay(), 85,
+        "quick mobile click did not queue only the remaining latch duration");
+
+    quickButton.emit(quick.mock.laya.Event.CLICK, quickEvent);
+    const quickOtherButton = quick.IntroUI.menuItems[1];
+    quickOtherButton.emit(quick.mock.laya.Event.CLICK, {
+        currentTarget: quickOtherButton,
+        target: quickOtherButton,
+        touchId: 91,
+        stopPropagation() {},
+    });
+    assert.equal(quick.IntroUI.selectedIndex, 0,
+        "duplicate/cross click changed the accepted pending selection");
+    assert.equal(quick.mock.scheduledCount(), 1,
+        "duplicate click created another activation timer");
+    quick.mock.advanceTime(84);
+    assert.deepEqual(quick.activations, [], "quick mobile click activated before the final latch millisecond");
+    assert.equal(quickButton.menuFace.y, 5, "pressed face cleared before the final latch millisecond");
+    quick.mock.advanceTime(1);
+    assert.deepEqual(quick.activations, ["START"], "quick mobile click did not activate once after 120ms");
+    assert.equal(quickButton.menuFace.y, 0, "quick mobile click did not restore the face before navigation");
+    assert.equal(quick.mock.scheduledCount(), 0, "quick mobile click retained a stale activation timer");
+    quick.mock.advanceTime(200);
+    assert.deepEqual(quick.activations, ["START"], "duplicate click activated more than once");
+
+    const longPress = mountIntroMainMenu(true, 3000);
+    const longPressButton = longPress.IntroUI.menuItems[1];
+    const longPressEvent = {
+        currentTarget: longPressButton,
+        target: longPressButton,
+        touchId: 92,
+        stopPropagation() {},
+    };
+    longPressButton.emit(longPress.mock.laya.Event.MOUSE_DOWN, longPressEvent);
+    longPress.mock.advanceTime(120);
+    longPressButton.emit(longPress.mock.laya.Event.MOUSE_UP, longPressEvent);
+    longPressButton.emit(longPress.mock.laya.Event.CLICK, longPressEvent);
+    assert.deepEqual(longPress.activations, ["HOW_TO_PLAY"],
+        "120ms mobile press did not activate HOW TO PLAY immediately on click");
+    assert.equal(longPress.mock.scheduledCount(), 0,
+        "completed long press retained a stale activation timer");
+
+    const outCancel = mountIntroMainMenu(true, 4000);
+    const outButton = outCancel.IntroUI.menuItems[0];
+    const outEvent = {
+        currentTarget: outButton,
+        target: outButton,
+        touchId: 93,
+        stopPropagation() {},
+    };
+    outButton.emit(outCancel.mock.laya.Event.MOUSE_DOWN, outEvent);
+    outCancel.mock.advanceTime(30);
+    outButton.emit(outCancel.mock.laya.Event.MOUSE_UP, outEvent);
+    outButton.emit(outCancel.mock.laya.Event.CLICK, outEvent);
+    outButton.emit(outCancel.mock.laya.Event.MOUSE_OUT, {
+        ...outEvent,
+        nativeEvent: { type: "touchmove" },
+    });
+    assert.equal(outButton.menuFace.y, 0, "MOUSE_OUT did not clear queued pressed feedback");
+    assert.equal(outCancel.mock.scheduledCount(), 0, "MOUSE_OUT retained a queued activation timer");
+    outCancel.mock.advanceTime(200);
+    assert.deepEqual(outCancel.activations, [], "MOUSE_OUT did not cancel queued navigation");
+
+    const blurCancel = mountIntroMainMenu(true, 5000);
+    const blurCancelButton = blurCancel.IntroUI.menuItems[1];
+    const blurCancelEvent = {
+        currentTarget: blurCancelButton,
+        target: blurCancelButton,
+        touchId: 94,
+        stopPropagation() {},
+    };
+    blurCancelButton.emit(blurCancel.mock.laya.Event.MOUSE_DOWN, blurCancelEvent);
+    blurCancel.mock.advanceTime(40);
+    blurCancelButton.emit(blurCancel.mock.laya.Event.MOUSE_UP, blurCancelEvent);
+    blurCancelButton.emit(blurCancel.mock.laya.Event.CLICK, blurCancelEvent);
+    blurCancel.mock.laya.stage.emit(blurCancel.mock.laya.Event.BLUR);
+    assert.equal(blurCancelButton.menuFace.y, 0, "blur did not clear queued pressed feedback");
+    assert.equal(blurCancel.mock.scheduledCount(), 0, "blur retained a queued activation timer");
+    blurCancel.mock.advanceTime(200);
+    assert.deepEqual(blurCancel.activations, [], "blur did not cancel queued navigation");
+
+    const teardownCancel = mountIntroMainMenu(true, 6000);
+    const teardownCancelButton = teardownCancel.IntroUI.menuItems[0];
+    const teardownCancelEvent = {
+        currentTarget: teardownCancelButton,
+        target: teardownCancelButton,
+        touchId: 95,
+        stopPropagation() {},
+    };
+    teardownCancelButton.emit(teardownCancel.mock.laya.Event.MOUSE_DOWN, teardownCancelEvent);
+    teardownCancel.mock.advanceTime(50);
+    teardownCancelButton.emit(teardownCancel.mock.laya.Event.MOUSE_UP, teardownCancelEvent);
+    teardownCancelButton.emit(teardownCancel.mock.laya.Event.CLICK, teardownCancelEvent);
+    teardownCancel.IntroUI.clearView();
+    assert.equal(teardownCancelButton.menuFace.y, 0, "clearView did not clear queued pressed feedback");
+    assert.equal(teardownCancel.mock.scheduledCount(), 0, "clearView retained a queued activation timer");
+    teardownCancel.mock.advanceTime(200);
+    assert.deepEqual(teardownCancel.activations, [], "clearView did not cancel queued navigation");
+
+    const mobileBack = mountIntroHowToPlay(true, 6500);
+    const mobileBackButton = mobileBack.backButton;
+    const mobileBackEvent = {
+        currentTarget: mobileBackButton,
+        target: mobileBackButton,
+        touchId: 96,
+        nativeEvent: { type: "touchend" },
+        stopPropagation() {},
+    };
+    const expectedBackGeometry = {
+        x: 130,
+        y: 422,
+        width: 640,
+        height: 65,
+        scaleX: 1,
+        scaleY: 1,
+        hitArea: null,
+        mouseEnabled: true,
+    };
+    const mobileBackOuterBefore = outerButtonGeometry(mobileBackButton);
+    const mobileBackNormalFill = drawnPolyFill(mobileBackButton.menuFace);
+    const mobileBackNormalBorder = drawnPolyBorder(mobileBackButton.menuFace);
+    const mobileBackNormalBorderWidth = drawnPolyLineWidth(mobileBackButton.menuFace);
+    const mobileBackNormalAccent = drawnRectFill(mobileBackButton.menuAccent);
+    const mobileBackNormalAccentHeight = drawnRectHeight(mobileBackButton.menuAccent);
+    const mobileBackNormalGlow = mobileBackButton.menuGlow.alpha;
+    assert.deepEqual(mobileBackOuterBefore, expectedBackGeometry,
+        "mobile BACK outer geometry changed before interaction");
+    mobileBackButton.emit(mobileBack.mock.laya.Event.MOUSE_DOWN, mobileBackEvent);
+    assert.equal(mobileBackButton.menuFace.y, 5, "mobile BACK did not sink its internal face by 5px");
+    assert.equal(drawnPolyFill(mobileBackButton.menuFace), "#4C1D95",
+        "mobile BACK did not use the Secondary violet pressed fill");
+    assert.ok(mobileBackButton.menuGlow.alpha > mobileBackNormalGlow,
+        "mobile BACK did not strengthen its violet glow");
+    assert.notEqual(drawnPolyBorder(mobileBackButton.menuFace), mobileBackNormalBorder,
+        "mobile BACK did not strengthen its border");
+    assert.ok(drawnPolyLineWidth(mobileBackButton.menuFace) > mobileBackNormalBorderWidth,
+        "mobile BACK did not strengthen its border width");
+    assert.notEqual(drawnRectFill(mobileBackButton.menuAccent), mobileBackNormalAccent,
+        "mobile BACK did not strengthen its accent");
+    assert.ok(drawnRectHeight(mobileBackButton.menuAccent) > mobileBackNormalAccentHeight,
+        "mobile BACK did not strengthen its accent height");
+    assert.deepEqual(outerButtonGeometry(mobileBackButton), mobileBackOuterBefore,
+        "mobile BACK press changed outer geometry or hit state");
+    mobileBack.mock.advanceTime(35);
+    mobileBackButton.emit(mobileBack.mock.laya.Event.MOUSE_UP, mobileBackEvent);
+    mobileBackButton.emit(mobileBack.mock.laya.Event.CLICK, mobileBackEvent);
+    mobileBackButton.emit(mobileBack.mock.laya.Event.MOUSE_OUT, mobileBackEvent);
+    assert.equal(mobileBack.IntroUI.view, "HOW_TO_PLAY", "mobile BACK navigated before 120ms");
+    assert.deepEqual(mobileBack.activations, [], "mobile BACK callback ran before 120ms");
+    assert.equal(mobileBackButton.menuFace.y, 5,
+        "mobile BACK did not retain its pressed face through the 120ms latch");
+    assert.equal(mobileBack.mock.nextTimerDelay(), 85,
+        "mobile BACK did not queue only the remaining latch duration");
+    mobileBackButton.emit(mobileBack.mock.laya.Event.CLICK, mobileBackEvent);
+    assert.equal(mobileBack.mock.scheduledCount(), 1,
+        "duplicate mobile BACK click created another activation timer");
+    mobileBack.mock.advanceTime(85);
+    assert.equal(mobileBack.IntroUI.view, "MAIN_MENU", "mobile BACK did not navigate after 120ms");
+    assert.deepEqual(mobileBack.activations, ["BACK"], "mobile BACK did not activate exactly once");
+    assert.equal(mobileBackButton.menuFace.y, 0, "mobile BACK did not restore its internal face");
+    assert.equal(drawnPolyFill(mobileBackButton.menuFace), mobileBackNormalFill,
+        "mobile BACK did not restore its normal fill");
+    assert.deepEqual(outerButtonGeometry(mobileBackButton), mobileBackOuterBefore,
+        "mobile BACK completion changed outer geometry or hit state");
+    mobileBack.mock.advanceTime(200);
+    assert.deepEqual(mobileBack.activations, ["BACK"], "duplicate mobile BACK click navigated twice");
+
+    const mobileBackOut = mountIntroHowToPlay(true, 7000);
+    const mobileBackOutEvent = {
+        currentTarget: mobileBackOut.backButton,
+        target: mobileBackOut.backButton,
+        touchId: 97,
+        stopPropagation() {},
+    };
+    mobileBackOut.backButton.emit(mobileBackOut.mock.laya.Event.MOUSE_DOWN, mobileBackOutEvent);
+    mobileBackOut.mock.advanceTime(30);
+    mobileBackOut.backButton.emit(mobileBackOut.mock.laya.Event.MOUSE_UP, mobileBackOutEvent);
+    mobileBackOut.backButton.emit(mobileBackOut.mock.laya.Event.CLICK, mobileBackOutEvent);
+    mobileBackOut.backButton.emit(mobileBackOut.mock.laya.Event.MOUSE_OUT, {
+        ...mobileBackOutEvent,
+        nativeEvent: { type: "touchmove" },
+    });
+    assert.equal(mobileBackOut.backButton.menuFace.y, 0,
+        "mobile BACK MOUSE_OUT did not restore the pressed face");
+    assert.equal(mobileBackOut.mock.scheduledCount(), 0,
+        "mobile BACK MOUSE_OUT retained an activation timer");
+    mobileBackOut.mock.advanceTime(200);
+    assert.equal(mobileBackOut.IntroUI.view, "HOW_TO_PLAY",
+        "mobile BACK MOUSE_OUT did not prevent navigation");
+    assert.deepEqual(mobileBackOut.activations, [],
+        "mobile BACK MOUSE_OUT did not cancel its callback");
+
+    const mobileBackBlur = mountIntroHowToPlay(true, 7500);
+    const mobileBackBlurEvent = {
+        currentTarget: mobileBackBlur.backButton,
+        target: mobileBackBlur.backButton,
+        touchId: 98,
+        stopPropagation() {},
+    };
+    mobileBackBlur.backButton.emit(mobileBackBlur.mock.laya.Event.MOUSE_DOWN, mobileBackBlurEvent);
+    mobileBackBlur.mock.advanceTime(40);
+    mobileBackBlur.backButton.emit(mobileBackBlur.mock.laya.Event.MOUSE_UP, mobileBackBlurEvent);
+    mobileBackBlur.backButton.emit(mobileBackBlur.mock.laya.Event.CLICK, mobileBackBlurEvent);
+    mobileBackBlur.mock.laya.stage.emit(mobileBackBlur.mock.laya.Event.BLUR);
+    assert.equal(mobileBackBlur.backButton.menuFace.y, 0,
+        "mobile BACK blur did not restore the pressed face");
+    assert.equal(mobileBackBlur.mock.scheduledCount(), 0,
+        "mobile BACK blur retained an activation timer");
+    mobileBackBlur.mock.advanceTime(200);
+    assert.equal(mobileBackBlur.IntroUI.view, "HOW_TO_PLAY", "mobile BACK blur did not prevent navigation");
+    assert.deepEqual(mobileBackBlur.activations, [], "mobile BACK blur did not cancel its callback");
+
+    const mobileBackTeardown = mountIntroHowToPlay(true, 8000);
+    const mobileBackTeardownEvent = {
+        currentTarget: mobileBackTeardown.backButton,
+        target: mobileBackTeardown.backButton,
+        touchId: 99,
+        stopPropagation() {},
+    };
+    mobileBackTeardown.backButton.emit(
+        mobileBackTeardown.mock.laya.Event.MOUSE_DOWN,
+        mobileBackTeardownEvent,
+    );
+    mobileBackTeardown.mock.advanceTime(50);
+    mobileBackTeardown.backButton.emit(
+        mobileBackTeardown.mock.laya.Event.MOUSE_UP,
+        mobileBackTeardownEvent,
+    );
+    mobileBackTeardown.backButton.emit(
+        mobileBackTeardown.mock.laya.Event.CLICK,
+        mobileBackTeardownEvent,
+    );
+    mobileBackTeardown.IntroUI.clearView();
+    assert.equal(mobileBackTeardown.backButton.menuFace.y, 0,
+        "teardown did not restore pending mobile BACK feedback");
+    assert.equal(mobileBackTeardown.mock.scheduledCount(), 0,
+        "teardown retained a pending mobile BACK activation timer");
+    mobileBackTeardown.mock.advanceTime(200);
+    assert.deepEqual(mobileBackTeardown.activations, [],
+        "teardown did not cancel pending mobile BACK navigation");
+
+    const desktop = mountIntroMainMenu(false);
+    for (let index = 0; index < desktop.IntroUI.menuItems.length; index++) {
+        const button = desktop.IntroUI.menuItems[index];
+        const pointerEvent = { currentTarget: button, target: button, stopPropagation() {} };
+        button.emit(desktop.mock.laya.Event.MOUSE_OVER, pointerEvent);
+        assert.equal(desktop.IntroUI.selectedIndex, index, "desktop hover selection regressed");
+        const outerBefore = outerButtonGeometry(button);
+        const normalGlow = button.menuGlow.alpha;
+        const normalFill = drawnPolyFill(button.menuFace);
+        const normalBorder = drawnPolyBorder(button.menuFace);
+        const normalBorderWidth = drawnPolyLineWidth(button.menuFace);
+        const normalAccent = drawnRectFill(button.menuAccent);
+        const normalAccentHeight = drawnRectHeight(button.menuAccent);
+        button.emit(desktop.mock.laya.Event.MOUSE_DOWN, pointerEvent);
+        assert.equal(button.menuFace.y, 5, "desktop press did not sink the internal face by 5px");
+        assert.equal(drawnPolyFill(button.menuFace), expectedPressedFills[index],
+            "desktop press did not use the approved per-button pressed fill");
+        assert.ok(button.menuGlow.alpha > normalGlow, "desktop press did not strengthen the glow");
+        assert.notEqual(drawnPolyBorder(button.menuFace), normalBorder,
+            "desktop press did not strengthen the border");
+        assert.ok(drawnPolyLineWidth(button.menuFace) > normalBorderWidth,
+            "desktop press did not strengthen the border width");
+        assert.notEqual(drawnRectFill(button.menuAccent), normalAccent,
+            "desktop press did not strengthen the accent");
+        assert.ok(drawnRectHeight(button.menuAccent) > normalAccentHeight,
+            "desktop press did not strengthen the accent height");
+        assert.deepEqual(outerButtonGeometry(button), outerBefore,
+            "desktop pointer-down changed outer button geometry or hit state");
+        button.emit(desktop.mock.laya.Event.MOUSE_UP, pointerEvent);
+        assert.equal(button.menuFace.y, 0, "desktop MOUSE_UP did not restore the internal face");
+        assert.equal(button.menuGlow.alpha, normalGlow, "desktop MOUSE_UP did not restore the glow");
+        assert.equal(drawnPolyFill(button.menuFace), normalFill, "desktop MOUSE_UP did not restore the fill");
+        assert.equal(drawnPolyBorder(button.menuFace), normalBorder,
+            "desktop MOUSE_UP did not restore the border");
+        assert.equal(drawnRectFill(button.menuAccent), normalAccent,
+            "desktop MOUSE_UP did not restore the accent");
+        assert.deepEqual(outerButtonGeometry(button), outerBefore,
+            "desktop MOUSE_UP changed outer button geometry or hit state");
+        button.emit(desktop.mock.laya.Event.MOUSE_DOWN, pointerEvent);
+        button.emit(desktop.mock.laya.Event.MOUSE_OUT, pointerEvent);
+        assert.equal(button.menuFace.y, 0, "desktop MOUSE_OUT did not restore the internal face");
+        assert.equal(button.menuGlow.alpha, normalGlow, "desktop MOUSE_OUT did not restore the glow");
+        assert.deepEqual(outerButtonGeometry(button), outerBefore,
+            "desktop MOUSE_OUT changed outer button geometry or hit state");
+    }
+    desktop.IntroUI.unbindKeyboard();
+
+    const desktopClick = mountIntroMainMenu(false, 7000);
+    const desktopStart = desktopClick.IntroUI.menuItems[0];
+    desktopStart.emit(desktopClick.mock.laya.Event.CLICK, {
+        currentTarget: desktopStart,
+        target: desktopStart,
+        stopPropagation() {},
+    });
+    assert.deepEqual(desktopClick.activations, ["START"],
+        "desktop menu click was delayed by the mobile latch");
+    assert.equal(desktopClick.mock.scheduledCount(), 0,
+        "desktop menu click created a mobile latch timer");
+
+    const desktopHow = mountIntroMainMenu(false, 7500);
+    const desktopHowButton = desktopHow.IntroUI.menuItems[1];
+    desktopHowButton.emit(desktopHow.mock.laya.Event.CLICK, {
+        currentTarget: desktopHowButton,
+        target: desktopHowButton,
+        stopPropagation() {},
+    });
+    assert.deepEqual(desktopHow.activations, ["HOW_TO_PLAY"],
+        "desktop HOW TO PLAY click was not immediate");
+    assert.equal(desktopHow.mock.scheduledCount(), 0,
+        "desktop HOW TO PLAY click created a mobile latch timer");
+
+    const desktopBack = mountIntroHowToPlay(false, 7750);
+    const desktopBackButton = desktopBack.backButton;
+    const desktopBackEvent = {
+        currentTarget: desktopBackButton,
+        target: desktopBackButton,
+        stopPropagation() {},
+    };
+    const desktopBackOuterBefore = outerButtonGeometry(desktopBackButton);
+    const desktopBackNormalFill = drawnPolyFill(desktopBackButton.menuFace);
+    const desktopBackNormalGlow = desktopBackButton.menuGlow.alpha;
+    assert.deepEqual(desktopBackOuterBefore, expectedBackGeometry,
+        "desktop BACK outer geometry changed before interaction");
+    desktopBackButton.emit(desktopBack.mock.laya.Event.MOUSE_DOWN, desktopBackEvent);
+    assert.equal(desktopBackButton.menuFace.y, 5, "desktop BACK did not sink its internal face by 5px");
+    assert.equal(drawnPolyFill(desktopBackButton.menuFace), "#4C1D95",
+        "desktop BACK did not use the Secondary violet pressed fill");
+    assert.ok(desktopBackButton.menuGlow.alpha > desktopBackNormalGlow,
+        "desktop BACK did not strengthen its violet glow");
+    assert.deepEqual(outerButtonGeometry(desktopBackButton), desktopBackOuterBefore,
+        "desktop BACK press changed outer geometry or hit state");
+    desktopBackButton.emit(desktopBack.mock.laya.Event.MOUSE_UP, desktopBackEvent);
+    assert.equal(desktopBackButton.menuFace.y, 0, "desktop BACK MOUSE_UP did not restore its face");
+    assert.equal(drawnPolyFill(desktopBackButton.menuFace), desktopBackNormalFill,
+        "desktop BACK MOUSE_UP did not restore its fill");
+    assert.deepEqual(outerButtonGeometry(desktopBackButton), desktopBackOuterBefore,
+        "desktop BACK MOUSE_UP changed outer geometry or hit state");
+    desktopBackButton.emit(desktopBack.mock.laya.Event.MOUSE_DOWN, desktopBackEvent);
+    desktopBackButton.emit(desktopBack.mock.laya.Event.MOUSE_OUT, desktopBackEvent);
+    assert.equal(desktopBackButton.menuFace.y, 0, "desktop BACK MOUSE_OUT did not restore its face");
+    assert.equal(desktopBack.IntroUI.view, "HOW_TO_PLAY", "desktop BACK MOUSE_OUT navigated");
+    desktopBackButton.emit(desktopBack.mock.laya.Event.CLICK, desktopBackEvent);
+    assert.equal(desktopBack.IntroUI.view, "MAIN_MENU", "desktop BACK click did not navigate immediately");
+    assert.deepEqual(desktopBack.activations, ["BACK"], "desktop BACK click did not activate exactly once");
+    assert.equal(desktopBack.mock.scheduledCount(), 0, "desktop BACK click created a mobile latch timer");
+
+    const desktopEnter = mountIntroMainMenu(false, 8000);
+    desktopEnter.mock.laya.stage.emit(desktopEnter.mock.laya.Event.KEY_DOWN, {
+        keyCode: 13,
+        key: "Enter",
+        stopPropagation() {},
+    });
+    assert.deepEqual(desktopEnter.activations, ["START"],
+        "desktop Enter activation was delayed by the mobile latch");
+    assert.equal(desktopEnter.mock.scheduledCount(), 0,
+        "desktop Enter activation created a mobile latch timer");
+
+    const desktopBackEnter = mountIntroHowToPlay(false, 8500);
+    desktopBackEnter.mock.laya.stage.emit(desktopBackEnter.mock.laya.Event.KEY_DOWN, {
+        keyCode: 13,
+        key: "Enter",
+        stopPropagation() {},
+    });
+    assert.equal(desktopBackEnter.IntroUI.view, "MAIN_MENU",
+        "desktop HOW TO PLAY Enter did not navigate BACK immediately");
+    assert.deepEqual(desktopBackEnter.activations, ["BACK"],
+        "desktop HOW TO PLAY Enter did not activate BACK exactly once");
+    assert.equal(desktopBackEnter.mock.scheduledCount(), 0,
+        "desktop HOW TO PLAY Enter created a mobile latch timer");
+
+    console.log("mobile/desktop START + HOW TO PLAY + BACK internal 5px feedback and mobile-only 120ms latch: PASS");
+    console.log("MOCKED_MENU_PRESS_STATE=PASS");
+    console.log("REAL_LAYA_TOUCH_MAPPING=NOT_VERIFIED");
+    console.log("RENDERED_FRAME=NOT_VERIFIED");
+    console.log("HUMAN_PERCEPTIBILITY=NOT_VERIFIED");
 }
 
 function runMountedUiSmoke() {
@@ -655,6 +1303,7 @@ function runStaticContracts() {
 
     const mainSource = read(mainPath);
     const introSource = read(introPath);
+    const headIntroSource = headFile("src/IntroUI.ts");
     const scoreSource = read(scorePath);
     const tutorialSource = read(tutorialPath);
     assert.match(touchSource, /innerWidth/);
@@ -718,6 +1367,78 @@ function runStaticContracts() {
         /IntroUI\.mobileTouchSession\s*\?\s*"TOUCH AND HOLD TO INITIALIZE"\s*:\s*"HOLD \[ ENTER \] OR HOLD MOUSE TO INITIALIZE"/);
     assert.match(introSource,
         /IntroUI\.mobileTouchSession\s*\?\s*"TAP AN OPTION TO SELECT"\s*:\s*"W \/ ↑\s+PREVIOUS\s+S \/ ↓\s+NEXT\s+ENTER\s+CONFIRM"/);
+    const menuPressSource = extractBetween(
+        introSource,
+        "    private static updateButton(button: any, selected: boolean): void",
+        "    private static enterHowToPlay(): void",
+    );
+    assert.match(introSource, /private static readonly MOBILE_MENU_PRESS_MIN_MS: number = 120/);
+    assert.match(menuPressSource,
+        /const pressed = button\.menuPressed === true/);
+    assert.match(menuPressSource, /button\.menuFace\.y = pressed \? 5 : 0/);
+    assert.match(menuPressSource, /fill = kind === "PRIMARY" \? "#0284C7" : "#4C1D95"/);
+    assert.match(menuPressSource, /glowAlpha = kind === "PRIMARY" \? 0\.62 : 0\.52/);
+    assert.match(menuPressSource, /borderWidth = 3/);
+    assert.match(menuPressSource, /accentHeight = 5/);
+    assert.match(menuPressSource, /button\.menuGlow\.alpha = glowAlpha/);
+    assert.match(menuPressSource,
+        /activation !== null\s*&& IntroUI\.mobileTouchSession/,
+        "mobileTouchSession no longer gates delayed navigation completion");
+    assert.match(menuPressSource,
+        /Laya\.timer\.once\([\s\S]*?IntroUI\.completeMobileMenuPress/);
+    assert.match(menuPressSource,
+        /Date\.now\(\) - IntroUI\.menuPressStartedAt/);
+    assert.match(menuPressSource,
+        /nativeType === "touchend"[\s\S]*?IntroUI\.pendingMenuActivation !== null/);
+    assert.match(menuPressSource,
+        /if \(!IntroUI\.mobileTouchSession\) \{[\s\S]*?IntroUI\.activateMenuAction\(action\);[\s\S]*?return;/,
+        "desktop CLICK no longer has an immediate activation branch");
+    assert.match(menuPressSource,
+        /if \(!IntroUI\.mobileTouchSession\) \{\s*IntroUI\.cancelPendingMenuActivation\(\);\s*return;\s*\}/,
+        "desktop release no longer restores pressed state without the mobile timer");
+    assert.match(menuPressSource,
+        /\(activation === "BACK" && IntroUI\.view === IntroUI\.HOW_TO_PLAY\)[\s\S]*?\(activation !== "BACK" && IntroUI\.view === IntroUI\.MAIN_MENU\)/,
+        "single mobile activation seam does not validate BACK versus main-menu view ownership");
+    const backButtonBindings = Array.from(introSource.matchAll(
+        /const backButton = IntroUI\.createButton\("BACK", 640, 60, "BACK"\)[\s\S]*?backButton\.on\(Laya\.Event\.MOUSE_DOWN, IntroUI, IntroUI\.onMenuPointerDown\)[\s\S]*?backButton\.on\(Laya\.Event\.MOUSE_UP, IntroUI, IntroUI\.onMenuPointerUp\)[\s\S]*?backButton\.on\(Laya\.Event\.MOUSE_OUT, IntroUI, IntroUI\.onMenuPointerCancel\)[\s\S]*?backButton\.on\(Laya\.Event\.CLICK, IntroUI, IntroUI\.onMenuClick\)/g,
+    ));
+    assert.equal(backButtonBindings.length, 2,
+        "both IntroUI-owned BACK buttons do not reuse the canonical navigation press/click seam");
+    assert.doesNotMatch(menuPressSource,
+        /(?:button|target)\.(?:x|y|width|height|scaleX|scaleY)\s*=/,
+        "pressed-state handlers mutate outer button geometry");
+    assert.doesNotMatch(introSource,
+        /Laya\.Browser\.onMobile|isTouchCapable\(|ontouchstart|maxTouchPoints|msMaxTouchPoints|userAgent/,
+        "IntroUI introduced a second mobile/device detector");
+    assert.match(introSource,
+        /item\.on\(Laya\.Event\.MOUSE_UP, IntroUI, IntroUI\.onMenuPointerUp\)[\s\S]*?item\.on\(Laya\.Event\.MOUSE_OUT, IntroUI, IntroUI\.onMenuPointerCancel\)/);
+    assert.match(introSource,
+        /Laya\.stage\.on\(Laya\.Event\.MOUSE_UP, IntroUI, IntroUI\.onMenuPointerUp\)/);
+    assert.match(introSource,
+        /Laya\.stage\.on\(Laya\.Event\.BLUR, IntroUI, IntroUI\.onMenuPointerCancel\)/);
+    assert.match(introSource,
+        /private static clearView\(\): void \{\s*IntroUI\.cancelPendingMenuActivation\(\)/);
+    assert.equal(
+        extractBetween(introSource, "    private static onIntroPointerUp", "    private static onCoverPointerCancel"),
+        extractBetween(headIntroSource, "    private static onIntroPointerUp", "    private static onCoverPointerCancel"),
+        "protected Cover pointer release behavior changed",
+    );
+    assert.equal(
+        extractBetween(introSource, "    private static onFocusLost", "    private static acceptStart"),
+        extractBetween(headIntroSource, "    private static onFocusLost", "    private static acceptStart"),
+        "protected Cover blur behavior changed",
+    );
+    assert.equal(
+        extractBetween(introSource, "    private static onMenuHover", "    private static onMenuClick"),
+        extractBetween(headIntroSource, "    private static onMenuHover", "    private static onMenuClick"),
+        "desktop menu hover selection behavior changed",
+    );
+    assert.equal(
+        extractBetween(introSource, "    private static onKeyDown", "    private static onKeyUp"),
+        extractBetween(headIntroSource, "    private static onKeyDown", "    private static onKeyUp"),
+        "desktop W/S/arrow/Enter navigation behavior changed",
+    );
+    console.log("canonical mobile session + internal-only 5px/latch seam + cleanup + desktop navigation contracts: PASS");
     const mobileHelpSource = extractBetween(
         introSource,
         "    private static renderMobileHowToPlay(): void",
@@ -769,6 +1490,8 @@ function runStaticContracts() {
     const changed = execFileSync("git", ["diff", "--name-only"], { cwd: repoRoot, encoding: "utf8" })
         .split(/\r?\n/)
         .filter(Boolean);
+    assert.deepEqual([...changed].sort(), ["src/IntroUI.ts", "tools/verify-mobile-touch.cjs"],
+        "tracked diff escaped the two-file writable allowlist");
     assert.equal(changed.some((file) => /(?:^|\/)SfxManager\.ts$/.test(file)), false);
     assert.equal(changed.some((file) => /^(?:src\/TouchController\.ts|src\/TouchTutorialUI\.ts|src\/BallController\.ts|src\/ScoreManager\.ts)$/.test(file)), false);
     assert.equal(changed.includes("assets/Scene.ls"), false);
@@ -780,6 +1503,7 @@ runStateSmoke();
 runOrientationStateSmoke();
 runLayoutSmoke();
 runMountedUiSmoke();
+runIntroMainMenuPressSmoke();
 runTutorialMountedSmoke();
 runStaticContracts();
 console.log("verification: PASS");
