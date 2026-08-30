@@ -28,7 +28,7 @@ Requirements, technical decisions, code integration, debugging, verification, an
 - **Browser demo:** [Play LayaAir Ball Game](https://yangyjie134.github.io/layaair-ball-game/)
 - **Downloadable Web build:** [Latest GitHub Release](https://github.com/YangYjie134/layaair-ball-game/releases/latest)
 
-Press `Space` after the page loads to dismiss the controls overlay and start the music. 浏览器会在首次键盘交互后开始播放音频。
+After the page loads, Cover music is requested immediately on a best-effort basis. Hold `Enter` or the left mouse button for about 1.2 seconds to initialize the desktop title cover; on mobile, touch and hold. If browser autoplay blocks the entry-time request, the first valid interaction retries it without blocking initialization.
 
 ## Current Status
 
@@ -50,9 +50,9 @@ Press `Space` after the page loads to dismiss the controls overlay and start the
 - Moving platforms in later levels.
 - Disappearing platforms with brighter warning colors and a visual highlight bar.
 - Static spike hazards in Level 4.
-- Intro controls overlay at startup.
+- Hold-to-initialize title cover, main menu, and desktop/mobile control guides.
 - Code-drawn background.
-- Background music that starts on the first key press (browser autoplay-friendly).
+- Desktop/Mobile-optimized Cover and main-menu music, with the existing silent How to Play, startup transition, and first-use mobile tutorial lifecycle before gameplay music begins.
 - Sound effects for jump, death, and level-clear.
 - Global mute toggle for music and sound effects.
 
@@ -63,18 +63,20 @@ Press `Space` after the page loads to dismiss the controls overlay and start the
 | Move left / right | `A` / `D` or left / right arrow |
 | Jump | `W` or up arrow |
 | Advance after win | `R` |
-| Dismiss intro overlay / start music | `Space` |
+| Initialize title cover (desktop) | Hold `Enter` or hold left mouse |
+| Initialize title cover (mobile) | Touch and hold |
 | Mute / unmute all audio | `M` |
+| Pause / resume during active gameplay | `P` or the top-right Pause control |
 
 ## Audio Credits
 
-All audio is CC0 (public domain) by Juhani Junkala (published on OpenGameArt as
-SubspaceAudio). Attribution is not legally required under CC0, but is provided here
-as good practice. See `assets/AUDIO_SOURCES.md` for per-file sound-effect provenance
-(waveform verification and conversion notes). Background-music provenance is recorded
-in the credit below.
+All audio is CC0 (public domain). Attribution is not legally required under CC0, but
+is provided here as good practice. See `assets/AUDIO_SOURCES.md` for per-file roles,
+authors, source pages, licenses, and actual processing details.
 
-* **Background music** — "Ending / Credits", from *5 Chiptunes (Action)*
+* **Cover / main-menu music** — `transmission.mp3` and `sector.mp3`, by SRG774, from *Dark Sci-Fi Audio Pack*
+  * https://opengameart.org/content/dark-sci-fi-audio-pack  (CC0 1.0)
+* **Gameplay music** — "Ending / Credits", by Juhani Junkala / SubspaceAudio, from *5 Chiptunes (Action)*
   * https://opengameart.org/content/5-chiptunes-action  (CC0)
 * **Sound effects** (jump / death / level-clear) — from *512 Sound Effects (8-bit style)*
   * https://opengameart.org/content/512-sound-effects-8-bit-style  (CC0)
@@ -133,8 +135,8 @@ src/
 ├── BallController.ts      # Core player, platform, level, respawn, and hazard logic
 ├── ScoreManager.ts        # Score and win-state management
 ├── BackgroundManager.ts   # Code-drawn background
-├── IntroUI.ts             # Startup controls overlay
-├── BgmManager.ts          # Background music start / stop / volume
+├── IntroUI.ts             # Title-cover Hold flow, main menu, and control guides
+├── BgmManager.ts          # Cover / menu / gameplay music roles and playback
 └── SfxManager.ts          # Jump, death, and level-clear sound effects
 ```
 
@@ -142,7 +144,7 @@ src/
 
 1. Open the repository folder with **LayaAir IDE 3**.
 2. Run the main scene from the editor.
-3. Press `Space` to dismiss the controls overlay, then use the controls listed above.
+3. Hold `Enter` or the left mouse button to initialize the title cover, then use the controls listed above.
 
 For the downloadable Web build, extract the Release archive and use a local HTTP server rather than opening it with `file://`. The hosted GitHub Pages build is linked in **Play Online** above.
 
@@ -157,7 +159,7 @@ For the downloadable Web build, extract the Release archive and use a local HTTP
 
 ## Known Limitations
 
-- Background music starts only after the first keyboard input, due to browser autoplay policies.
+- Cover music is requested on Cover entry, but browser autoplay policy may defer it until the first valid interaction.
 - The hosted and downloadable builds are portfolio Web demos, not commercial or store releases.
 
 ## Licensing

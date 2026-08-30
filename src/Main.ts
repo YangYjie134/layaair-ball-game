@@ -82,7 +82,16 @@ export class Main extends Laya.Script {
             }
         });
 
-        IntroUI.show(() => this.acceptStartIntent(), this.mobileTouchSession);
+        IntroUI.show(
+            () => this.acceptStartIntent(),
+            this.mobileTouchSession,
+            {
+                onCoverInteractionStarted: () => BgmManager.playCoverBgm(this.mobileTouchSession),
+                onMainMenuEntered: () => BgmManager.playMenuBgm(this.mobileTouchSession),
+                onHowToPlayEntered: () => BgmManager.stopBgm(),
+            }
+        );
+        BgmManager.playCoverBgm(this.mobileTouchSession);
         Laya.stage.on(Laya.Event.KEY_DOWN, this, this.onGlobalKeyDown);
         Laya.stage.on(Laya.Event.KEY_UP, this, this.onGlobalKeyUp);
         Laya.stage.on(Laya.Event.BLUR, this, this.onFocusLost);
@@ -121,6 +130,7 @@ export class Main extends Laya.Script {
 
         this.gameStarted = true;
         this.touchController?.completePreGame();
+        BgmManager.stopBgm();
         this.showLevelTransition(1, () => this.enterLevelOne());
     }
 
@@ -153,14 +163,12 @@ export class Main extends Laya.Script {
         }
 
         this.enableGameplay();
-        BgmManager.playBgm();
     }
 
     private completeTouchTutorial(): void {
         this.touchTutorial = null;
         this.touchController?.resetAll();
         this.enableGameplay();
-        BgmManager.playBgm();
     }
 
     private enableGameplay(): void {
@@ -171,6 +179,7 @@ export class Main extends Laya.Script {
         this.ballController.enabled = true;
         this.touchController?.setGameplayActive(true);
         this.syncPausePresentation();
+        BgmManager.playGameplayBgm(this.mobileTouchSession);
     }
 
     /** Canonical session-owned test used by every Pause entry and final commit. */

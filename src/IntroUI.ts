@@ -32,6 +32,23 @@ interface IntroCoverTrackingMarker {
     speed: number;
 }
 
+interface IntroChargeParticle {
+    node: any;
+    active: boolean;
+    x: number;
+    y: number;
+    velocityX: number;
+    velocityY: number;
+    ageMs: number;
+    lifetimeMs: number;
+}
+
+interface IntroUILifecycleCallbacks {
+    onCoverInteractionStarted?: () => void;
+    onMainMenuEntered?: () => void;
+    onHowToPlayEntered?: () => void;
+}
+
 export class IntroUI {
     private static readonly COVER: "COVER" = "COVER";
     private static readonly MAIN_MENU: "MAIN_MENU" = "MAIN_MENU";
@@ -40,6 +57,11 @@ export class IntroUI {
     private static readonly PANEL_HEIGHT: number = 580;
     private static readonly KEY_RELEASE_DECAY_MS: number = 190;
     private static readonly COVER_MENU_GUARD_MS: number = 450;
+    // First-pass runtime candidates. Human runtime validation is still required.
+    private static readonly FULL_CHARGE_MS: number = 1200;
+    private static readonly DECAY_MS: number = 300;
+    private static readonly SUCCESS_MS: number = 250;
+    private static readonly CHARGE_PARTICLE_POOL_MAX: number = 18;
 
     private static view: "COVER" | "MAIN_MENU" | "HOW_TO_PLAY" = IntroUI.COVER;
     private static selectedIndex: 0 | 1 = 0;
@@ -47,13 +69,34 @@ export class IntroUI {
     private static mobileTouchSession: boolean = false;
     private static keyboardBound: boolean = false;
     private static startHandler: (() => void) | null = null;
+    private static lifecycleCallbacks: IntroUILifecycleCallbacks = {};
     private static container: any = null;
     private static overlay: any = null;
     private static panel: any = null;
     private static coverRoot: any = null;
     private static coverDismissed: boolean = false;
+    private static coverEnterPhysicalDown: boolean = false;
     private static coverEnterReleaseRequired: boolean = false;
     private static mainMenuActivationGuarded: boolean = false;
+    private static menuPointerActivationState: "ARMED" | "WAITING_FOR_OLD_RELEASE" | "WAITING_FOR_FRESH_DOWN" = "ARMED";
+    private static blockedCoverPointerId: number | null = null;
+    private static coverHoldState: "IDLE" | "CHARGING" | "DECAYING" | "COMPLETING" = "IDLE";
+    private static coverHoldSource: "NONE" | "KEY_ENTER" | "POINTER" = "NONE";
+    private static activeHoldPointerId: number | null = null;
+    private static coverChargeElapsedMs: number = 0;
+    private static coverChargeProgress: number = 0;
+    private static coverCompletionElapsedMs: number = 0;
+    private static chargeParticleEmissionElapsedMs: number = 0;
+    private static chargeParticleSequence: number = 0;
+    private static chargeParticleRoot: any = null;
+    private static chargeParticles: IntroChargeParticle[] = [];
+    private static chargeBarRoot: any = null;
+    private static chargeBarFill: any = null;
+    private static chargeBarLeadingEdge: any = null;
+    private static chargeBarPulse: any = null;
+    private static coverStatusText: any = null;
+    private static coverBrowserWindow: any = null;
+    private static coverBrowserDocument: any = null;
     private static coverParticleRoot: any = null;
     private static coverParticles: IntroCoverParticle[] = [];
     private static coverCoreRoot: any = null;
@@ -70,12 +113,17 @@ export class IntroUI {
     private static keycaps: { [key: string]: IntroKeycapVisual } = {};
     private static keyFeedbackLoopActive: boolean = false;
 
-    public static show(onStart: () => void, mobileTouchSession: boolean = false): void {
+    public static show(
+        onStart: () => void,
+        mobileTouchSession: boolean = false,
+        lifecycleCallbacks: IntroUILifecycleCallbacks = {}
+    ): void {
         if (IntroUI.started || IntroUI.container) {
             return;
         }
 
         IntroUI.startHandler = onStart;
+        IntroUI.lifecycleCallbacks = lifecycleCallbacks;
         IntroUI.mobileTouchSession = mobileTouchSession;
         IntroUI.view = IntroUI.COVER;
         IntroUI.selectedIndex = 0;
@@ -163,6 +211,7 @@ export class IntroUI {
 
         IntroUI.view = IntroUI.COVER;
         IntroUI.coverDismissed = false;
+        IntroUI.coverEnterPhysicalDown = false;
         IntroUI.coverEnterReleaseRequired = false;
         IntroUI.mainMenuActivationGuarded = false;
         if (IntroUI.overlay) {
@@ -277,11 +326,12 @@ export class IntroUI {
         status.width = stageWidth;
         status.height = 22;
         coverRoot.addChild(status);
+        IntroUI.coverStatusText = status;
 
         const prompt = IntroUI.createText(
             IntroUI.mobileTouchSession
-                ? "TAP ANYWHERE TO CONTINUE"
-                : "CLICK / TAP ANYWHERE OR PRESS [ ENTER ] TO CONTINUE",
+                ? "TOUCH AND HOLD TO INITIALIZE"
+                : "HOLD [ ENTER ] OR HOLD MOUSE TO INITIALIZE",
             18,
             "#E2E8F0",
             true
@@ -294,6 +344,9 @@ export class IntroUI {
         prompt.height = 30;
         coverRoot.addChild(prompt);
 
+        const chargeDisplay = IntroUI.createCoverChargeDisplay(stageWidth);
+        coverRoot.addChild(chargeDisplay);
+
         const bottomRail = new Laya.Sprite();
         bottomRail.graphics.drawRect(210, 0, stageWidth - 420, 1, "#1E3A5F");
         bottomRail.graphics.drawRect(stageWidth / 2 - 48, -1, 96, 3, "#8B5CF6");
@@ -301,10 +354,113 @@ export class IntroUI {
         bottomRail.alpha = 0.68;
         coverRoot.addChild(bottomRail);
 
-        coverRoot.on(Laya.Event.CLICK, IntroUI, IntroUI.onCoverClick);
+        coverRoot.on(Laya.Event.MOUSE_DOWN, IntroUI, IntroUI.onCoverPointerDown);
+        coverRoot.on(Laya.Event.MOUSE_OUT, IntroUI, IntroUI.onCoverPointerCancel);
         IntroUI.container.addChild(coverRoot);
         IntroUI.coverRoot = coverRoot;
+        IntroUI.bindCoverBackgroundLifecycle();
         IntroUI.startCoverMotionLoop();
+    }
+
+    private static createCoverChargeDisplay(stageWidth: number): any {
+        const root = new Laya.Sprite();
+        root.mouseEnabled = false;
+        root.visible = false;
+
+        const barWidth = 540;
+        const barHeight = 18;
+        const barX = (stageWidth - barWidth) / 2;
+        const barY = 638;
+
+        const pulse = new Laya.Sprite();
+        pulse.mouseEnabled = false;
+        pulse.x = barX - 8;
+        pulse.y = barY - 8;
+        pulse.graphics.drawPoly(
+            0,
+            0,
+            IntroUI.cutCornerPoints(barWidth + 16, barHeight + 16, 7),
+            "#0EA5E9"
+        );
+        pulse.alpha = 0;
+        root.addChild(pulse);
+
+        const backing = new Laya.Sprite();
+        backing.mouseEnabled = false;
+        backing.x = barX;
+        backing.y = barY;
+        backing.graphics.drawPoly(
+            0,
+            0,
+            IntroUI.cutCornerPoints(barWidth, barHeight, 5),
+            "#03101D",
+            "#22D3EE",
+            1.5
+        );
+        backing.alpha = 0.92;
+        root.addChild(backing);
+
+        const ticks = new Laya.Sprite();
+        ticks.mouseEnabled = false;
+        ticks.x = barX;
+        ticks.y = barY;
+        for (let index = 1; index < 12; index++) {
+            const x = (barWidth * index) / 12;
+            ticks.graphics.drawLine(x, 4, x, index % 3 === 0 ? 14 : 10, "#164E63", 1);
+        }
+        ticks.alpha = 0.72;
+        root.addChild(ticks);
+
+        const fill = new Laya.Sprite();
+        fill.mouseEnabled = false;
+        fill.x = barX + 4;
+        fill.y = barY + 4;
+        root.addChild(fill);
+
+        const leadingEdge = new Laya.Sprite();
+        leadingEdge.mouseEnabled = false;
+        leadingEdge.y = barY + 2;
+        leadingEdge.graphics.drawRect(-2, 0, 4, barHeight - 4, "#E8FDFF");
+        leadingEdge.alpha = 0;
+        root.addChild(leadingEdge);
+
+        const particleRoot = IntroUI.createChargeParticlePool();
+        root.addChild(particleRoot);
+
+        IntroUI.chargeBarRoot = root;
+        IntroUI.chargeBarFill = fill;
+        IntroUI.chargeBarLeadingEdge = leadingEdge;
+        IntroUI.chargeBarPulse = pulse;
+        IntroUI.chargeParticleRoot = particleRoot;
+        return root;
+    }
+
+    private static createChargeParticlePool(): any {
+        const root = new Laya.Sprite();
+        root.mouseEnabled = false;
+        IntroUI.chargeParticles = [];
+
+        const colors = ["#22D3EE", "#38BDF8", "#67E8F9", "#E8FDFF", "#8B5CF6"];
+        for (let index = 0; index < IntroUI.CHARGE_PARTICLE_POOL_MAX; index++) {
+            const node = new Laya.Sprite();
+            const size = 1.5 + (index % 3) * 0.75;
+            node.mouseEnabled = false;
+            node.visible = false;
+            node.graphics.drawRect(-size / 2, -size / 2, size, size, colors[index % colors.length]);
+            root.addChild(node);
+            IntroUI.chargeParticles.push({
+                node,
+                active: false,
+                x: 0,
+                y: 0,
+                velocityX: 0,
+                velocityY: 0,
+                ageMs: 0,
+                lifetimeMs: 0
+            });
+        }
+
+        return root;
     }
 
     private static createCoverParticleField(stageWidth: number, stageHeight: number): any {
@@ -457,7 +613,8 @@ export class IntroUI {
         }
 
         const rawDelta = Number(Laya.timer?.delta);
-        const deltaSeconds = (Number.isFinite(rawDelta) ? Math.min(Math.max(rawDelta, 0), 50) : 16.67) / 1000;
+        const deltaMs = Number.isFinite(rawDelta) ? Math.min(Math.max(rawDelta, 0), 50) : 16.67;
+        const deltaSeconds = deltaMs / 1000;
         const stageWidth = Laya.stage.width;
         const stageHeight = Laya.stage.height;
         IntroUI.coverMotionElapsedSeconds += deltaSeconds;
@@ -493,6 +650,208 @@ export class IntroUI {
             ) * marker.amplitude;
             marker.node.x = marker.originX + (marker.axis === "X" ? offset : 0);
             marker.node.y = marker.originY + (marker.axis === "Y" ? offset : 0);
+        }
+
+        IntroUI.updateCoverHold(deltaMs);
+        if (IntroUI.view !== IntroUI.COVER) {
+            return;
+        }
+        IntroUI.updateChargeParticles(deltaMs);
+        IntroUI.drawCoverChargeProgress();
+    }
+
+    private static beginCoverHold(
+        source: "KEY_ENTER" | "POINTER",
+        pointerId: number | null = null,
+        event: any = null
+    ): void {
+        if (
+            IntroUI.view !== IntroUI.COVER
+            || IntroUI.coverDismissed
+            || IntroUI.coverHoldState !== "IDLE"
+            || IntroUI.coverHoldSource !== "NONE"
+        ) {
+            IntroUI.stopEvent(event);
+            return;
+        }
+
+        IntroUI.coverHoldState = "CHARGING";
+        IntroUI.coverHoldSource = source;
+        IntroUI.activeHoldPointerId = source === "POINTER" ? pointerId : null;
+        IntroUI.coverChargeElapsedMs = 0;
+        IntroUI.coverChargeProgress = 0;
+        IntroUI.chargeParticleEmissionElapsedMs = 0;
+        if (IntroUI.chargeBarRoot) {
+            IntroUI.chargeBarRoot.visible = true;
+        }
+        IntroUI.lifecycleCallbacks.onCoverInteractionStarted?.();
+        IntroUI.stopEvent(event);
+    }
+
+    private static cancelCoverHold(): void {
+        if (IntroUI.coverHoldState !== "CHARGING") {
+            return;
+        }
+        IntroUI.coverHoldState = "DECAYING";
+        IntroUI.coverHoldSource = "NONE";
+        IntroUI.activeHoldPointerId = null;
+        IntroUI.chargeParticleEmissionElapsedMs = 0;
+    }
+
+    private static updateCoverHold(deltaMs: number): void {
+        if (IntroUI.coverHoldState === "CHARGING") {
+            IntroUI.coverChargeElapsedMs = Math.min(
+                IntroUI.FULL_CHARGE_MS,
+                IntroUI.coverChargeElapsedMs + deltaMs
+            );
+            IntroUI.coverChargeProgress = IntroUI.coverChargeElapsedMs / IntroUI.FULL_CHARGE_MS;
+            IntroUI.chargeParticleEmissionElapsedMs += deltaMs;
+            while (IntroUI.chargeParticleEmissionElapsedMs >= 70) {
+                IntroUI.chargeParticleEmissionElapsedMs -= 70;
+                IntroUI.emitChargeParticle(false);
+            }
+
+            if (IntroUI.coverChargeProgress >= 1) {
+                const completedSource = IntroUI.coverHoldSource;
+                const completedPointerId = IntroUI.activeHoldPointerId;
+                IntroUI.coverHoldState = "COMPLETING";
+                IntroUI.coverCompletionElapsedMs = 0;
+                IntroUI.coverHoldSource = "NONE";
+                IntroUI.activeHoldPointerId = null;
+                if (completedSource === "KEY_ENTER") {
+                    IntroUI.coverEnterReleaseRequired = true;
+                } else if (completedSource === "POINTER") {
+                    IntroUI.menuPointerActivationState = "WAITING_FOR_OLD_RELEASE";
+                    IntroUI.blockedCoverPointerId = completedPointerId;
+                }
+                IntroUI.emitCompletionParticleBurst();
+            }
+            return;
+        }
+
+        if (IntroUI.coverHoldState === "DECAYING") {
+            IntroUI.coverChargeProgress = Math.max(
+                0,
+                IntroUI.coverChargeProgress - deltaMs / IntroUI.DECAY_MS
+            );
+            if (IntroUI.coverChargeProgress <= 0) {
+                IntroUI.coverChargeProgress = 0;
+                IntroUI.coverChargeElapsedMs = 0;
+                IntroUI.coverHoldState = "IDLE";
+            }
+            return;
+        }
+
+        if (IntroUI.coverHoldState === "COMPLETING") {
+            IntroUI.coverCompletionElapsedMs += deltaMs;
+            if (IntroUI.coverCompletionElapsedMs >= IntroUI.SUCCESS_MS) {
+                IntroUI.enterMainMenuAfterCover();
+            }
+        }
+    }
+
+    private static emitChargeParticle(completionBurst: boolean): void {
+        if (!IntroUI.chargeParticles.length) {
+            return;
+        }
+
+        const particle = IntroUI.chargeParticles[
+            IntroUI.chargeParticleSequence % IntroUI.chargeParticles.length
+        ];
+        const sequence = IntroUI.chargeParticleSequence++;
+        const barWidth = 540;
+        const barX = (Laya.stage.width - barWidth) / 2;
+        const barY = 638;
+        const leadingX = barX + 4 + (barWidth - 8) * IntroUI.coverChargeProgress;
+        const originMode = sequence % 6;
+        const originX = completionBurst
+            ? barX + 12 + ((sequence * 47) % (barWidth - 24))
+            : originMode === 0
+                ? barX + 4
+                : originMode === 1
+                    ? barX + barWidth - 4
+                    : leadingX + ((sequence % 3) - 1) * 5;
+        const direction = (sequence % 5) - 2;
+
+        particle.active = true;
+        particle.x = originX;
+        particle.y = barY + (completionBurst ? 8 : 5 + (sequence % 8));
+        particle.velocityX = direction * (completionBurst ? 34 : 19);
+        particle.velocityY = -(completionBurst ? 105 + (sequence % 4) * 18 : 72 + (sequence % 5) * 11);
+        particle.ageMs = 0;
+        particle.lifetimeMs = completionBurst ? 380 + (sequence % 4) * 45 : 300 + (sequence % 5) * 42;
+        particle.node.x = particle.x;
+        particle.node.y = particle.y;
+        particle.node.alpha = 1;
+        particle.node.visible = true;
+    }
+
+    private static emitCompletionParticleBurst(): void {
+        for (let index = 0; index < 12; index++) {
+            IntroUI.emitChargeParticle(true);
+        }
+    }
+
+    private static updateChargeParticles(deltaMs: number): void {
+        const deltaSeconds = deltaMs / 1000;
+        for (const particle of IntroUI.chargeParticles) {
+            if (!particle.active) {
+                continue;
+            }
+            particle.ageMs += deltaMs;
+            if (particle.ageMs >= particle.lifetimeMs) {
+                particle.active = false;
+                particle.node.visible = false;
+                continue;
+            }
+            particle.velocityY += 24 * deltaSeconds;
+            particle.x += particle.velocityX * deltaSeconds;
+            particle.y += particle.velocityY * deltaSeconds;
+            particle.node.x = particle.x;
+            particle.node.y = particle.y;
+            particle.node.alpha = Math.max(0, 1 - particle.ageMs / particle.lifetimeMs);
+        }
+    }
+
+    private static drawCoverChargeProgress(): void {
+        if (!IntroUI.chargeBarRoot || !IntroUI.chargeBarFill || !IntroUI.chargeBarLeadingEdge) {
+            return;
+        }
+
+        const active = IntroUI.coverHoldState !== "IDLE" || IntroUI.coverChargeProgress > 0;
+        IntroUI.chargeBarRoot.visible = active;
+        if (!active) {
+            IntroUI.chargeBarLeadingEdge.alpha = 0;
+            if (IntroUI.coverStatusText) IntroUI.coverStatusText.text = "SYSTEM READY";
+            return;
+        }
+
+        const innerWidth = 532;
+        const fillWidth = innerWidth * IntroUI.coverChargeProgress;
+        IntroUI.chargeBarFill.graphics.clear();
+        if (fillWidth > 0) {
+            IntroUI.chargeBarFill.graphics.drawRect(0, 0, fillWidth, 10, "#0EA5E9");
+            IntroUI.chargeBarFill.graphics.drawRect(0, 1, fillWidth, 2, "#67E8F9");
+        }
+        IntroUI.chargeBarLeadingEdge.x = (Laya.stage.width - 540) / 2 + 4 + fillWidth;
+        IntroUI.chargeBarLeadingEdge.alpha = fillWidth > 1 ? 0.92 : 0;
+
+        if (IntroUI.coverHoldState === "COMPLETING") {
+            if (IntroUI.coverStatusText) IntroUI.coverStatusText.text = "CORE LINK ESTABLISHED";
+            if (IntroUI.chargeBarPulse) {
+                IntroUI.chargeBarPulse.alpha = 0.12 + 0.2 * Math.sin(
+                    Math.min(1, IntroUI.coverCompletionElapsedMs / IntroUI.SUCCESS_MS) * Math.PI
+                );
+            }
+            return;
+        }
+
+        if (IntroUI.chargeBarPulse) IntroUI.chargeBarPulse.alpha = 0;
+        const percentage = Math.round(IntroUI.coverChargeProgress * 100);
+        if (IntroUI.coverStatusText) {
+            IntroUI.coverStatusText.text = IntroUI.coverHoldState === "DECAYING"
+                ? `SIGNAL DECAY // ${percentage}%`
+                : `INITIALIZING // ${percentage}%`;
         }
     }
 
@@ -533,6 +892,58 @@ export class IntroUI {
         IntroUI.coverTrackingRoot = null;
         IntroUI.coverTrackingMarkers = [];
         IntroUI.coverMotionElapsedSeconds = 0;
+    }
+
+    private static clearCoverChargeState(): void {
+        for (const particle of IntroUI.chargeParticles) {
+            particle.active = false;
+            particle.node.visible = false;
+        }
+        IntroUI.chargeParticles = [];
+        IntroUI.chargeParticleRoot = null;
+        IntroUI.chargeBarRoot = null;
+        IntroUI.chargeBarFill = null;
+        IntroUI.chargeBarLeadingEdge = null;
+        IntroUI.chargeBarPulse = null;
+        IntroUI.coverStatusText = null;
+        IntroUI.coverHoldState = "IDLE";
+        IntroUI.coverHoldSource = "NONE";
+        IntroUI.activeHoldPointerId = null;
+        IntroUI.coverChargeElapsedMs = 0;
+        IntroUI.coverChargeProgress = 0;
+        IntroUI.coverCompletionElapsedMs = 0;
+        IntroUI.chargeParticleEmissionElapsedMs = 0;
+        IntroUI.chargeParticleSequence = 0;
+    }
+
+    private static bindCoverBackgroundLifecycle(): void {
+        IntroUI.unbindCoverBackgroundLifecycle();
+        IntroUI.coverBrowserWindow = Laya.Browser?.window || null;
+        IntroUI.coverBrowserDocument = IntroUI.coverBrowserWindow?.document || null;
+        IntroUI.coverBrowserWindow?.addEventListener?.("touchcancel", IntroUI.onCoverPointerCancel);
+        IntroUI.coverBrowserWindow?.addEventListener?.("pagehide", IntroUI.onCoverBackgroundCancel);
+        IntroUI.coverBrowserDocument?.addEventListener?.("visibilitychange", IntroUI.onCoverVisibilityChange);
+    }
+
+    private static unbindCoverBackgroundLifecycle(): void {
+        IntroUI.coverBrowserWindow?.removeEventListener?.("touchcancel", IntroUI.onCoverPointerCancel);
+        IntroUI.coverBrowserWindow?.removeEventListener?.("pagehide", IntroUI.onCoverBackgroundCancel);
+        IntroUI.coverBrowserDocument?.removeEventListener?.("visibilitychange", IntroUI.onCoverVisibilityChange);
+        IntroUI.coverBrowserWindow = null;
+        IntroUI.coverBrowserDocument = null;
+    }
+
+    private static onCoverBackgroundCancel(): void {
+        IntroUI.cancelCoverHold();
+    }
+
+    private static onCoverVisibilityChange(): void {
+        if (
+            IntroUI.coverBrowserDocument?.hidden === true
+            || IntroUI.coverBrowserDocument?.visibilityState === "hidden"
+        ) {
+            IntroUI.cancelCoverHold();
+        }
     }
 
     private static createCoverCore(): any {
@@ -732,6 +1143,7 @@ export class IntroUI {
         IntroUI.menuItems = [startButton, howToPlayButton];
         for (const item of IntroUI.menuItems) {
             item.on(Laya.Event.MOUSE_OVER, IntroUI, IntroUI.onMenuHover);
+            item.on(Laya.Event.MOUSE_DOWN, IntroUI, IntroUI.onMenuPointerDown);
             item.on(Laya.Event.CLICK, IntroUI, IntroUI.onMenuClick);
             IntroUI.boundItems.push(item);
         }
@@ -1340,7 +1752,10 @@ export class IntroUI {
     }
 
     private static onMenuClick(event: any): void {
-        if (IntroUI.mainMenuActivationGuarded) {
+        if (
+            IntroUI.mainMenuActivationGuarded
+            || IntroUI.menuPointerActivationState !== "ARMED"
+        ) {
             IntroUI.stopEvent(event);
             return;
         }
@@ -1356,33 +1771,104 @@ export class IntroUI {
         if (index === 0) {
             IntroUI.acceptStart();
         } else {
-            IntroUI.view = IntroUI.HOW_TO_PLAY;
-            IntroUI.renderHowToPlay();
+            IntroUI.enterHowToPlay();
         }
+    }
+
+    private static onMenuPointerDown(event: any): void {
+        if (IntroUI.menuPointerActivationState === "WAITING_FOR_FRESH_DOWN") {
+            IntroUI.menuPointerActivationState = "ARMED";
+            IntroUI.blockedCoverPointerId = null;
+            return;
+        }
+        if (IntroUI.menuPointerActivationState === "WAITING_FOR_OLD_RELEASE") {
+            IntroUI.stopEvent(event);
+        }
+    }
+
+    private static enterHowToPlay(): void {
+        IntroUI.view = IntroUI.HOW_TO_PLAY;
+        IntroUI.renderHowToPlay();
+        IntroUI.lifecycleCallbacks.onHowToPlayEntered?.();
     }
 
     private static onBackClick(): void {
         IntroUI.view = IntroUI.MAIN_MENU;
         IntroUI.selectedIndex = 0;
         IntroUI.renderMainMenu();
+        IntroUI.lifecycleCallbacks.onMainMenuEntered?.();
     }
 
-    private static onCoverClick(event: any): void {
-        IntroUI.dismissCover(event, false);
+    private static onCoverPointerDown(event: any): void {
+        if (!IntroUI.mobileTouchSession) {
+            const rawButton = event?.button ?? event?.nativeEvent?.button;
+            if (rawButton !== undefined && rawButton !== null && Number(rawButton) !== 0) {
+                IntroUI.stopEvent(event);
+                return;
+            }
+        }
+        const pointerId = IntroUI.resolvePointerId(event);
+        IntroUI.beginCoverHold("POINTER", pointerId, event);
     }
 
-    private static dismissCover(event: any = null, fromEnter: boolean = false): void {
-        if (IntroUI.view !== IntroUI.COVER || IntroUI.coverDismissed) {
+    private static onIntroPointerUp(event: any): void {
+        const pointerId = IntroUI.resolvePointerId(event);
+        if (
+            IntroUI.menuPointerActivationState === "WAITING_FOR_OLD_RELEASE"
+            && pointerId === IntroUI.blockedCoverPointerId
+        ) {
+            IntroUI.menuPointerActivationState = "WAITING_FOR_FRESH_DOWN";
             IntroUI.stopEvent(event);
+        }
+
+        if (
+            IntroUI.view === IntroUI.COVER
+            && IntroUI.coverHoldState === "CHARGING"
+            && IntroUI.coverHoldSource === "POINTER"
+            && pointerId === IntroUI.activeHoldPointerId
+        ) {
+            IntroUI.cancelCoverHold();
+            IntroUI.stopEvent(event);
+        }
+    }
+
+    private static onCoverPointerCancel(event: any = null): void {
+        if (
+            IntroUI.coverHoldState !== "CHARGING"
+            || IntroUI.coverHoldSource !== "POINTER"
+        ) {
+            return;
+        }
+
+        const hasIdentity = event?.touchId !== undefined || event?.pointerId !== undefined;
+        if (hasIdentity && IntroUI.resolvePointerId(event) !== IntroUI.activeHoldPointerId) {
+            return;
+        }
+        IntroUI.cancelCoverHold();
+        IntroUI.stopEvent(event);
+    }
+
+    private static resolvePointerId(event: any): number {
+        const rawId = event?.touchId !== undefined && event?.touchId !== null
+            ? event.touchId
+            : event?.pointerId !== undefined && event?.pointerId !== null
+                ? event.pointerId
+                : 0;
+        const numericId = Number(rawId);
+        return Number.isFinite(numericId) ? numericId : 0;
+    }
+
+    private static enterMainMenuAfterCover(): void {
+        if (
+            IntroUI.view !== IntroUI.COVER
+            || IntroUI.coverDismissed
+            || IntroUI.coverHoldState !== "COMPLETING"
+        ) {
             return;
         }
 
         IntroUI.coverDismissed = true;
         IntroUI.mainMenuActivationGuarded = true;
-        if (fromEnter) {
-            IntroUI.coverEnterReleaseRequired = true;
-        }
-        IntroUI.stopEvent(event);
         IntroUI.clearCoverRoot();
 
         if (IntroUI.overlay) {
@@ -1395,6 +1881,7 @@ export class IntroUI {
         IntroUI.view = IntroUI.MAIN_MENU;
         IntroUI.selectedIndex = 0;
         IntroUI.renderMainMenu();
+        IntroUI.lifecycleCallbacks.onMainMenuEntered?.();
 
         Laya.timer.clear(IntroUI, IntroUI.releaseMainMenuActivationGuard);
         Laya.timer.once(
@@ -1415,12 +1902,15 @@ export class IntroUI {
     }
 
     private static clearCoverRoot(): void {
+        IntroUI.unbindCoverBackgroundLifecycle();
         IntroUI.clearCoverMotionVisuals();
+        IntroUI.clearCoverChargeState();
         if (!IntroUI.coverRoot) {
             return;
         }
         IntroUI.coverRoot.mouseEnabled = false;
-        IntroUI.coverRoot.off(Laya.Event.CLICK, IntroUI, IntroUI.onCoverClick);
+        IntroUI.coverRoot.off(Laya.Event.MOUSE_DOWN, IntroUI, IntroUI.onCoverPointerDown);
+        IntroUI.coverRoot.off(Laya.Event.MOUSE_OUT, IntroUI, IntroUI.onCoverPointerCancel);
         IntroUI.coverRoot.removeSelf();
         IntroUI.coverRoot.destroy(true);
         IntroUI.coverRoot = null;
@@ -1430,16 +1920,22 @@ export class IntroUI {
         Laya.timer.clear(IntroUI, IntroUI.releaseMainMenuActivationGuard);
         IntroUI.clearCoverRoot();
         IntroUI.coverDismissed = false;
+        IntroUI.coverEnterPhysicalDown = false;
         IntroUI.coverEnterReleaseRequired = false;
         IntroUI.mainMenuActivationGuarded = false;
+        IntroUI.menuPointerActivationState = "ARMED";
+        IntroUI.blockedCoverPointerId = null;
     }
 
     private static clearCoverInteractionState(): void {
         Laya.timer.clear(IntroUI, IntroUI.releaseMainMenuActivationGuard);
         IntroUI.clearCoverRoot();
         IntroUI.coverDismissed = false;
+        IntroUI.coverEnterPhysicalDown = false;
         IntroUI.coverEnterReleaseRequired = false;
         IntroUI.mainMenuActivationGuarded = false;
+        IntroUI.menuPointerActivationState = "ARMED";
+        IntroUI.blockedCoverPointerId = null;
     }
 
     private static onKeyDown(event: any): void {
@@ -1450,7 +1946,23 @@ export class IntroUI {
 
         if (IntroUI.view === IntroUI.COVER) {
             if (isEnter) {
-                IntroUI.dismissCover(event, true);
+                if (IntroUI.coverEnterPhysicalDown) {
+                    IntroUI.stopEvent(event);
+                    return;
+                }
+                IntroUI.coverEnterPhysicalDown = true;
+                if (
+                    IntroUI.coverHoldState === "IDLE"
+                    && IntroUI.coverHoldSource === "NONE"
+                ) {
+                    IntroUI.beginCoverHold("KEY_ENTER", null, event);
+                } else {
+                    // Auto-repeat and competing input sources never reset or advance charge.
+                    if (IntroUI.coverHoldSource === "POINTER" || IntroUI.coverHoldState === "COMPLETING") {
+                        IntroUI.coverEnterReleaseRequired = true;
+                    }
+                    IntroUI.stopEvent(event);
+                }
             }
             return;
         }
@@ -1487,8 +1999,7 @@ export class IntroUI {
         if (isEnter && IntroUI.selectedIndex === 0) {
             IntroUI.acceptStart();
         } else if (isEnter) {
-            IntroUI.view = IntroUI.HOW_TO_PLAY;
-            IntroUI.renderHowToPlay();
+            IntroUI.enterHowToPlay();
         }
     }
 
@@ -1496,6 +2007,18 @@ export class IntroUI {
         const keyCode = event ? event.keyCode : null;
         const key = event ? event.key : "";
         const isEnter = keyCode === 13 || key === "Enter";
+        if (isEnter) {
+            IntroUI.coverEnterPhysicalDown = false;
+        }
+        if (
+            IntroUI.view === IntroUI.COVER
+            && isEnter
+            && IntroUI.coverHoldState === "CHARGING"
+            && IntroUI.coverHoldSource === "KEY_ENTER"
+        ) {
+            IntroUI.cancelCoverHold();
+            return;
+        }
         if (isEnter && IntroUI.coverEnterReleaseRequired) {
             IntroUI.coverEnterReleaseRequired = false;
             return;
@@ -1591,11 +2114,7 @@ export class IntroUI {
     }
 
     private static onFocusLost(): void {
-        IntroUI.coverEnterReleaseRequired = false;
-        if (IntroUI.mainMenuActivationGuarded) {
-            Laya.timer.clear(IntroUI, IntroUI.releaseMainMenuActivationGuard);
-            IntroUI.releaseMainMenuActivationGuard();
-        }
+        IntroUI.cancelCoverHold();
         IntroUI.resetKeyFeedback();
     }
 
@@ -1606,6 +2125,7 @@ export class IntroUI {
             || IntroUI.selectedIndex !== 0
             || IntroUI.mainMenuActivationGuarded
             || IntroUI.coverEnterReleaseRequired
+            || IntroUI.menuPointerActivationState !== "ARMED"
         ) {
             return;
         }
@@ -1620,6 +2140,7 @@ export class IntroUI {
 
         const handler = IntroUI.startHandler;
         IntroUI.startHandler = null;
+        IntroUI.lifecycleCallbacks = {};
         if (handler) {
             handler();
         }
@@ -1631,6 +2152,7 @@ export class IntroUI {
         }
         Laya.stage.on(Laya.Event.KEY_DOWN, IntroUI, IntroUI.onKeyDown);
         Laya.stage.on(Laya.Event.KEY_UP, IntroUI, IntroUI.onKeyUp);
+        Laya.stage.on(Laya.Event.MOUSE_UP, IntroUI, IntroUI.onIntroPointerUp);
         Laya.stage.on(Laya.Event.BLUR, IntroUI, IntroUI.onFocusLost);
         IntroUI.keyboardBound = true;
     }
@@ -1641,6 +2163,7 @@ export class IntroUI {
         }
         Laya.stage.off(Laya.Event.KEY_DOWN, IntroUI, IntroUI.onKeyDown);
         Laya.stage.off(Laya.Event.KEY_UP, IntroUI, IntroUI.onKeyUp);
+        Laya.stage.off(Laya.Event.MOUSE_UP, IntroUI, IntroUI.onIntroPointerUp);
         Laya.stage.off(Laya.Event.BLUR, IntroUI, IntroUI.onFocusLost);
         IntroUI.keyboardBound = false;
     }
@@ -1652,6 +2175,7 @@ export class IntroUI {
 
         for (const item of IntroUI.boundItems) {
             item.off(Laya.Event.MOUSE_OVER, IntroUI, IntroUI.onMenuHover);
+            item.off(Laya.Event.MOUSE_DOWN, IntroUI, IntroUI.onMenuPointerDown);
             item.off(Laya.Event.CLICK, IntroUI, IntroUI.onMenuClick);
             item.off(Laya.Event.CLICK, IntroUI, IntroUI.onBackClick);
         }

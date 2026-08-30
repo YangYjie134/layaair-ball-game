@@ -631,12 +631,8 @@ function runStaticContracts() {
         2,
         "stepPhysics must route both disappearing-platform timer reads through the Pause-aware clock",
     );
-    const normalizedProtectedStep = protectedStep.replace(
-        /this\.readActiveGameplayTime\(time\.currTimer\(\)\)/g,
-        "time.currTimer()",
-    );
-    assert.equal(normalizedProtectedStep, headProtectedStep,
-        "stepPhysics changed outside the authorized input and Pause-aware clock seams");
+    assert.equal(protectedStep, headProtectedStep,
+        "stepPhysics protected body differs from the frozen HEAD blob");
 
     assert.match(ballSource, /left:\s*\(\)\s*=>\s*this\.isKeyDown\(Laya\.Keyboard\.LEFT,\s*Laya\.Keyboard\.A\)\s*\|\|\s*!!this\.touchInput\?\.left\(\)/);
     assert.match(ballSource, /right:\s*\(\)\s*=>\s*this\.isKeyDown\(Laya\.Keyboard\.RIGHT,\s*Laya\.Keyboard\.D\)\s*\|\|\s*!!this\.touchInput\?\.right\(\)/);
@@ -674,7 +670,7 @@ function runStaticContracts() {
 
     assert.match(mainSource, /mobileTouchSession\s*=\s*!!Laya\.Browser\.onMobile\s*&&\s*TouchController\.isTouchCapable\(\)/);
     assert.match(mainSource, /if \(this\.mobileTouchSession && this\.touchController\) \{[\s\S]*?TouchTutorialUI\.showOnce/);
-    assert.match(mainSource, /IntroUI\.show\(\(\) => this\.acceptStartIntent\(\), this\.mobileTouchSession\)/);
+    assert.match(mainSource, /IntroUI\.show\([\s\S]*?\(\) => this\.acceptStartIntent\(\),[\s\S]*?this\.mobileTouchSession,[\s\S]*?onCoverInteractionStarted:[\s\S]*?onMainMenuEntered:[\s\S]*?onHowToPlayEntered:/);
     assert.match(mainSource, /private completeTouchTutorial\(\): void \{[\s\S]*?resetAll\(\);[\s\S]*?enableGameplay\(\);/);
     const enterLevelOneSource = extractBetween(mainSource, "    private enterLevelOne(): void", "    private completeTouchTutorial(): void");
     const tutorialStartBranch = extractBetween(
@@ -687,20 +683,27 @@ function runStaticContracts() {
         "    private completeTouchTutorial(): void",
         "    private enableGameplay(): void"
     );
-    assert.doesNotMatch(tutorialStartBranch, /BgmManager\.playBgm\(\)/,
+    const enableGameplaySource = extractBetween(
+        mainSource,
+        "    private enableGameplay(): void",
+        "    /** Canonical session-owned test"
+    );
+    assert.doesNotMatch(tutorialStartBranch, /BgmManager/,
         "Gameplay BGM still starts while the first mobile tutorial mounts");
     assert.match(tutorialStartBranch, /if \(tutorial\) \{\s*this\.touchTutorial = tutorial;\s*this\.syncPausePresentation\(\);\s*return;\s*\}/);
-    assert.equal((enterLevelOneSource.match(/BgmManager\.playBgm\(\)/g) || []).length, 1,
-        "enterLevelOne must retain exactly one direct-start BGM call");
-    assertSourceOrder(
-        enterLevelOneSource.slice(enterLevelOneSource.indexOf("        this.enableGameplay();")),
-        ["this.enableGameplay();", "BgmManager.playBgm();"],
-        "desktop and session-repeat direct start"
-    );
+    assert.doesNotMatch(enterLevelOneSource, /BgmManager/,
+        "enterLevelOne retained a duplicate gameplay BGM call");
     assertSourceOrder(
         completeTutorialSource,
-        ["this.touchTutorial = null;", "this.touchController?.resetAll();", "this.enableGameplay();", "BgmManager.playBgm();"],
+        ["this.touchTutorial = null;", "this.touchController?.resetAll();", "this.enableGameplay();"],
         "final YES completion"
+    );
+    assert.doesNotMatch(completeTutorialSource, /BgmManager/,
+        "tutorial completion retained a duplicate gameplay BGM call");
+    assertSourceOrder(
+        enableGameplaySource,
+        ["this.activeGameplay = true;", "this.ballController.enabled = true;", "this.touchController?.setGameplayActive(true);", "this.syncPausePresentation();", "BgmManager.playGameplayBgm(this.mobileTouchSession);"],
+        "central gameplay enable"
     );
     assert.match(introSource, /"CONTROL TEST  \/  HOW TO PLAY"/);
     assert.match(introSource, /"TOUCH CONTROLS  \/  HOW TO PLAY"/);
@@ -712,7 +715,7 @@ function runStaticContracts() {
     assert.match(introSource, /createUtilityKey\("P",\s*"PAUSE"/);
     assert.match(introSource, /code === "KeyP" \|\| keyCode === 80[\s\S]*?return "P"/);
     assert.match(introSource,
-        /IntroUI\.mobileTouchSession\s*\?\s*"TAP ANYWHERE TO CONTINUE"\s*:\s*"CLICK \/ TAP ANYWHERE OR PRESS \[ ENTER \] TO CONTINUE"/);
+        /IntroUI\.mobileTouchSession\s*\?\s*"TOUCH AND HOLD TO INITIALIZE"\s*:\s*"HOLD \[ ENTER \] OR HOLD MOUSE TO INITIALIZE"/);
     assert.match(introSource,
         /IntroUI\.mobileTouchSession\s*\?\s*"TAP AN OPTION TO SELECT"\s*:\s*"W \/ ↑\s+PREVIOUS\s+S \/ ↓\s+NEXT\s+ENTER\s+CONFIRM"/);
     const mobileHelpSource = extractBetween(
@@ -766,10 +769,11 @@ function runStaticContracts() {
     const changed = execFileSync("git", ["diff", "--name-only"], { cwd: repoRoot, encoding: "utf8" })
         .split(/\r?\n/)
         .filter(Boolean);
-    assert.equal(changed.some((file) => /(?:^|\/)(?:BgmManager|SfxManager)\.ts$|^assets\/resources\/audio\//.test(file)), false);
+    assert.equal(changed.some((file) => /(?:^|\/)SfxManager\.ts$/.test(file)), false);
+    assert.equal(changed.some((file) => /^(?:src\/TouchController\.ts|src\/TouchTutorialUI\.ts|src\/BallController\.ts|src\/ScoreManager\.ts)$/.test(file)), false);
     assert.equal(changed.includes("assets/Scene.ls"), false);
     assert.equal(changed.some((file) => /^tools\/(?:verify-l4|l4-.*(?:snapshot|baseline))/.test(file)), false);
-    console.log("world layout, audio, and L4 fixture files unchanged: PASS");
+    console.log("world layout, protected touch/gameplay files, and L4 fixtures unchanged: PASS");
 }
 
 runStateSmoke();
