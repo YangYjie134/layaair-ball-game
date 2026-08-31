@@ -4,6 +4,7 @@ export interface PauseUIActions {
     requestPause(): void;
     resume(): void;
     restartCurrentAttempt(): void;
+    returnToMainMenu(): void;
     toggleMute(): void;
     toggleHaptics(): void;
     isMuted(): boolean;
@@ -18,7 +19,7 @@ interface PauseModalButton {
     glow: any;
     label: any;
     kind: PauseButtonKind;
-    action: "RESUME" | "RESTART" | "MUTE" | "HAPTICS";
+    action: "RESUME" | "RESTART" | "MAIN_MENU" | "MUTE" | "HAPTICS";
 }
 
 /** Shared cyber presentation for the gameplay Pause control and Pause modal. */
@@ -183,7 +184,7 @@ export class PauseUI {
         const stageWidth = Math.max(1, Number(Laya.stage?.width) || 1334);
         const stageHeight = Math.max(1, Number(Laya.stage?.height) || 750);
         const panelWidth = 520;
-        const panelHeight = this.mobileTouchSession ? 506 : 430;
+        const panelHeight = this.mobileTouchSession ? 576 : 500;
 
         const root = new Laya.Sprite();
         root.name = "PauseUI_Modal";
@@ -274,6 +275,13 @@ export class PauseUI {
         restart.root.y = buttonY;
         panel.addChild(restart.root);
         this.modalButtons.push(restart);
+
+        buttonY += 70;
+        const mainMenu = this.createModalButton("MAIN MENU", "MAIN_MENU", "SECONDARY", buttonWidth, buttonHeight);
+        mainMenu.root.x = buttonX;
+        mainMenu.root.y = buttonY;
+        panel.addChild(mainMenu.root);
+        this.modalButtons.push(mainMenu);
 
         buttonY += 70;
         const mute = this.createModalButton("MUTE: OFF", "MUTE", "SETTING", buttonWidth, buttonHeight);
@@ -405,6 +413,10 @@ export class PauseUI {
         }
         if (button.action === "RESTART") {
             this.actions.restartCurrentAttempt();
+            return;
+        }
+        if (button.action === "MAIN_MENU") {
+            this.actions.returnToMainMenu();
             return;
         }
         if (button.action === "MUTE") {

@@ -141,6 +141,32 @@ export class IntroUI {
         IntroUI.bindKeyboard();
     }
 
+    public static returnToMainMenu(
+        onStart: () => void,
+        mobileTouchSession: boolean = false,
+        lifecycleCallbacks: IntroUILifecycleCallbacks = {}
+    ): void {
+        if (!IntroUI.container || !IntroUI.panel) {
+            return;
+        }
+
+        IntroUI.startHandler = onStart;
+        IntroUI.lifecycleCallbacks = lifecycleCallbacks;
+        IntroUI.mobileTouchSession = mobileTouchSession;
+        IntroUI.started = false;
+        IntroUI.view = IntroUI.MAIN_MENU;
+        IntroUI.selectedIndex = 0;
+        IntroUI.resetCoverState();
+        if (IntroUI.overlay) {
+            IntroUI.overlay.alpha = 0.78;
+        }
+        IntroUI.panel.visible = true;
+        IntroUI.container.visible = true;
+        IntroUI.renderMainMenu();
+        IntroUI.bindKeyboard();
+        IntroUI.lifecycleCallbacks.onMainMenuEntered?.();
+    }
+
     private static createShell(): void {
         const container = new Laya.Sprite();
         const panelWidth = IntroUI.PANEL_WIDTH;

@@ -70,6 +70,7 @@ export class Main extends Laya.Script {
             requestPause: () => this.requestPauseIntent(),
             resume: () => this.resumeFromPause(),
             restartCurrentAttempt: () => this.restartCurrentAttemptFromPause(),
+            returnToMainMenu: () => this.returnToMainMenuFromPause(),
             toggleMute: () => this.toggleGlobalMute(),
             toggleHaptics: () => this.toggleDeathHaptics(),
             isMuted: () => SfxManager.isGlobalMuted(),
@@ -257,6 +258,31 @@ export class Main extends Laya.Script {
         this.ballController.enabled = true;
         this.touchController?.setGameplayActive(true);
         this.pauseUI.hidePauseModal();
+        this.syncPausePresentation();
+    }
+
+    private returnToMainMenuFromPause(): void {
+        if (!this.paused || !this.ballController) return;
+        if (!this.pauseUI?.lockModalActions()) return;
+
+        this.touchController?.resetAll();
+        this.touchController?.setGameplayActive(false);
+        this.ballController.resetRunToLevelOne();
+        this.ballController.enabled = false;
+        this.paused = false;
+        this.activeGameplay = false;
+        this.gameStarted = false;
+        this.cancelPendingPauseIntent();
+        this.pauseUI.hidePauseModal();
+        IntroUI.returnToMainMenu(
+            () => this.acceptStartIntent(),
+            this.mobileTouchSession,
+            {
+                onCoverInteractionStarted: () => BgmManager.playCoverBgm(this.mobileTouchSession),
+                onMainMenuEntered: () => BgmManager.playMenuBgm(this.mobileTouchSession),
+                onHowToPlayEntered: () => BgmManager.stopBgm(),
+            }
+        );
         this.syncPausePresentation();
     }
 

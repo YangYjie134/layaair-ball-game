@@ -224,9 +224,10 @@ function createMainFixture({ mobile = false, tutorial = false, failInitialCover 
     const browser = createLaya({ mobile });
     const { laya } = browser;
     const score = {
-        won: false, mobile: null, nextLevelHandler: null,
+        won: false, value: 0, mobile: null, nextLevelHandler: null, resetCount: 0,
         setMobileTouchSession(value) { this.mobile = value; }, init() {},
         setNextLevelHandler(handler) { this.nextLevelHandler = handler; },
+        reset() { this.resetCount++; this.value = 0; this.won = false; },
         isWon() { return this.won; },
     };
     const sfx = {
@@ -245,7 +246,8 @@ function createMainFixture({ mobile = false, tutorial = false, failInitialCover 
         constructor() {
             Object.assign(this, {
                 enabled: true, blocked: false, beginPauseCount: 0, finishPauseCount: 0,
-                rebaseCount: 0, restartCurrentCount: 0, currentLevel: 3, haptics: false,
+                rebaseCount: 0, restartCurrentCount: 0, resetRunCount: 0,
+                currentLevel: 3, haptics: false,
                 position: 10, velocity: 2, movingPlatformX: 20,
             });
         }
@@ -256,6 +258,14 @@ function createMainFixture({ mobile = false, tutorial = false, failInitialCover 
         finishGameplayPauseAccounting() { this.finishPauseCount++; }
         synchronizeJumpInputBaseline() { this.rebaseCount++; }
         restartCurrentAttempt() { this.restartCurrentCount++; this.position = 0; this.velocity = 0; }
+        resetRunToLevelOne() {
+            this.resetRunCount++;
+            this.finishPauseCount++;
+            this.currentLevel = 1;
+            this.position = 0;
+            this.velocity = 0;
+            score.reset();
+        }
         setDeathHapticsEnabled(value) { this.haptics = !!value; }
         isDeathHapticsEnabled() { return this.haptics; }
         advanceAfterWin() {}
@@ -270,6 +280,8 @@ function createMainFixture({ mobile = false, tutorial = false, failInitialCover 
     const transitions = [];
     let introStart = null;
     let introLifecycleCallbacks = {};
+    let introReturnCount = 0;
+    let introReturnMobile = null;
     let tutorialCompletion = null;
     const bgm = {
         currentRole: "NONE", currentProfile: null, playCount: 0, stopCount: 0,
@@ -320,10 +332,19 @@ function createMainFixture({ mobile = false, tutorial = false, failInitialCover 
     const { Main } = loadTs("src/Main.ts", laya, {
         "./BackgroundManager": { BackgroundManager: { draw() {} } },
         "./ScoreManager": { ScoreManager: { instance: score } },
-        "./IntroUI": { IntroUI: { show(handler, isMobile, callbacks) {
-            introStart = handler;
-            introLifecycleCallbacks = callbacks || {};
-        } } },
+        "./IntroUI": { IntroUI: {
+            show(handler, isMobile, callbacks) {
+                introStart = handler;
+                introLifecycleCallbacks = callbacks || {};
+            },
+            returnToMainMenu(handler, isMobile, callbacks) {
+                introReturnCount++;
+                introReturnMobile = isMobile;
+                introStart = handler;
+                introLifecycleCallbacks = callbacks || {};
+                introLifecycleCallbacks.onMainMenuEntered?.();
+            },
+        } },
         "./BgmManager": { BgmManager: bgm },
         "./SfxManager": { SfxManager: sfx },
         "./BallController": { default: FakeBall },
@@ -347,6 +368,8 @@ function createMainFixture({ mobile = false, tutorial = false, failInitialCover 
         enterHowToPlay: () => introLifecycleCallbacks.onHowToPlayEntered?.(),
         completeTutorial: () => tutorialCompletion?.(),
         finishTransition: () => transitions.shift().completion(),
+        getIntroReturnCount: () => introReturnCount,
+        getIntroReturnMobile: () => introReturnMobile,
     });
     return fixture;
 }
@@ -523,6 +546,57 @@ function testIntroLifecycleCallbacks() {
     fixture.IntroUI.onBackClick();
     assert.equal(fixture.lifecycle.menu, 2, "BACK did not report Main Menu entry");
     console.log("Intro optional Cover/Menu/How-To lifecycle callbacks: PASS");
+}
+
+function testIntroMainMenuReentry() {
+    const fixture = createIntroFixture();
+    const { IntroUI, laya } = fixture;
+    laya.stage.emit(laya.Event.KEY_DOWN, { keyCode: 13, key: "Enter" });
+    advanceIntro(fixture, 1200);
+    laya.stage.emit(laya.Event.KEY_UP, { keyCode: 13, key: "Enter" });
+    advanceIntro(fixture, 250);
+    laya.timer.flush();
+    assert.equal(fixture.lifecycle.menu, 1, "initial Cover did not reach Main Menu");
+
+    laya.stage.emit(laya.Event.KEY_DOWN, { keyCode: 13, key: "Enter" });
+    assert.equal(fixture.starts, 1, "initial START was not accepted");
+    assert.equal(IntroUI.started, true);
+    assert.equal(IntroUI.container.visible, false);
+    assert.equal(IntroUI.keyboardBound, false);
+
+    IntroUI.pendingMenuActivation = "START";
+    IntroUI.mainMenuActivationGuarded = true;
+    IntroUI.coverEnterReleaseRequired = true;
+    IntroUI.menuPointerActivationState = "WAITING_FOR_OLD_RELEASE";
+    let secondStarts = 0;
+    let menuEntries = 0;
+    IntroUI.returnToMainMenu(
+        () => { secondStarts++; },
+        false,
+        { onMainMenuEntered: () => { menuEntries++; } },
+    );
+
+    assert.equal(IntroUI.started, false);
+    assert.equal(IntroUI.view, "MAIN_MENU");
+    assert.equal(IntroUI.selectedIndex, 0);
+    assert.equal(IntroUI.pendingMenuActivation, null);
+    assert.equal(IntroUI.mainMenuActivationGuarded, false);
+    assert.equal(IntroUI.coverEnterReleaseRequired, false);
+    assert.equal(IntroUI.menuPointerActivationState, "ARMED");
+    assert.equal(IntroUI.coverRoot, null, "re-entry rendered Cover");
+    assert.equal(IntroUI.container.visible, true);
+    assert.equal(IntroUI.panel.visible, true);
+    assert.equal(IntroUI.menuItems.length, 2);
+    assert.equal(IntroUI.keyboardBound, true);
+    assert.equal((laya.stage.handlers.get(laya.Event.KEY_DOWN) || []).length, 1,
+        "re-entry duplicated the keyboard binding");
+    assert.equal(menuEntries, 1, "re-entry did not fire Main Menu lifecycle exactly once");
+
+    laya.stage.emit(laya.Event.KEY_DOWN, { keyCode: 13, key: "Enter" });
+    assert.equal(secondStarts, 1, "re-entry did not install a fresh START callback");
+    assert.equal(IntroUI.started, true);
+    assert.equal(IntroUI.container.visible, false);
+    console.log("IntroUI direct Main Menu re-entry + exactly-once lifecycle + second START: PASS");
 }
 
 function testBgmRoleModelAndFailureRollback() {
@@ -747,6 +821,68 @@ function testFreezeTouchAndLatch() {
     console.log("physics/platform freeze + touch reset + pre-game guard + P-only latch: PASS");
 }
 
+function testReturnToMainMenuLifecycle() {
+    const fixture = createMainFixture({ mobile: true });
+    fixture.enterMenu();
+    activate(fixture);
+    assert.equal(fixture.bgm.currentRole, "GAMEPLAY");
+    fixture.score.value = 75;
+    fixture.ball.currentLevel = 4;
+    fixture.touch.held = true;
+
+    fixture.main.requestPauseIntent();
+    fixture.laya.timer.flush();
+    assert.equal(fixture.main.paused, true);
+    assert.equal(fixture.pauseUI.shown, true);
+    const menuRequestsBefore = fixture.bgm.profileRequests.filter(({ role }) => role === "MENU").length;
+
+    fixture.pauseUI.actions.returnToMainMenu();
+    fixture.pauseUI.actions.returnToMainMenu();
+    assert.equal(fixture.ball.resetRunCount, 1, "duplicate MAIN MENU reset the run twice");
+    assert.equal(fixture.getIntroReturnCount(), 1, "duplicate MAIN MENU re-entered IntroUI twice");
+    assert.equal(fixture.getIntroReturnMobile(), true);
+    assert.equal(fixture.main.paused, false);
+    assert.equal(fixture.main.activeGameplay, false);
+    assert.equal(fixture.main.gameStarted, false);
+    assert.equal(fixture.main.pendingPauseIntent, false);
+    assert.equal(fixture.ball.enabled, false, "BallController remained enabled at Main Menu");
+    assert.equal(fixture.ball.currentLevel, 1);
+    assert.equal(fixture.ball.finishPauseCount, 1, "fresh-run reset did not close Pause accounting");
+    assert.equal(fixture.score.value, 0);
+    assert.equal(fixture.score.resetCount, 1, "fresh-run reset did not reach score reset");
+    assert.equal(fixture.touch.held, false);
+    assert.equal(fixture.touch.active, false);
+    assert.equal(fixture.pauseUI.shown, false, "Pause modal survived Main Menu return");
+    assert.equal(fixture.pauseUI.available, false, "Pause button remained available at Main Menu");
+    assert.equal(fixture.bgm.currentRole, "MENU");
+    assert.equal(
+        fixture.bgm.profileRequests.filter(({ role }) => role === "MENU").length,
+        menuRequestsBefore + 1,
+        "Main Menu return did not invoke the menu-entry BGM lifecycle exactly once",
+    );
+    const frozenAtMenu = [fixture.ball.position, fixture.ball.velocity, fixture.ball.movingPlatformX];
+    fixture.ball.simulateEngineFrame();
+    assert.deepEqual(
+        [fixture.ball.position, fixture.ball.velocity, fixture.ball.movingPlatformX],
+        frozenAtMenu,
+        "BallController progressed behind Main Menu",
+    );
+
+    fixture.start();
+    assert.equal(fixture.main.gameStarted, true, "second START was rejected");
+    assert.equal(fixture.main.activeGameplay, false);
+    assert.equal(fixture.transitions.length, 1);
+    assert.equal(fixture.transitions[0].level, 1);
+    assert.equal(fixture.bgm.currentRole, "NONE", "second START retained Menu BGM");
+    fixture.finishTransition();
+    assert.equal(fixture.main.activeGameplay, true);
+    assert.equal(fixture.ball.enabled, true);
+    assert.equal(fixture.ball.currentLevel, 1);
+    assert.equal(fixture.touch.active, true);
+    assert.equal(fixture.bgm.currentRole, "GAMEPLAY");
+    console.log("Pause MAIN MENU lifecycle + fresh Level 1 second START + menu BGM callback: PASS");
+}
+
 function fireMobileBackgroundBurst(fixture) {
     fixture.emitWindow("blur");
     fixture.setDocumentHidden(true);
@@ -951,19 +1087,98 @@ function testRestartAndHaptics() {
     console.log("current-level RESTART + browser-window opt-in death haptics + safe fallback: PASS");
 }
 
+function testFreshLevelOneReset() {
+    const fixture = loadBall();
+    const controller = fixture.controller;
+    controller.enabled = false;
+    controller.currentLevel = 4;
+    controller.startX = 123;
+    controller.startY = 456;
+    controller.centerX = 700;
+    controller.centerY = 710;
+    controller.vx = 8;
+    controller.vy = 9;
+    controller.activeGameplayPauseStartedAt = 100;
+    controller.activeGameplayPauseAccumulatedMs = 50;
+    fixture.laya.timer.currTimer = 1000;
+
+    const calls = [];
+    const originalFinishPause = controller.finishGameplayPauseAccounting.bind(controller);
+    const originalRespawn = controller.respawn.bind(controller);
+    controller.finishGameplayPauseAccounting = () => {
+        calls.push("finishPause");
+        originalFinishPause();
+    };
+    controller.clearDeathReconstruction = () => { calls.push("clearDeathReconstruction"); };
+    controller.clearDeathFeedback = () => { calls.push("clearDeathFeedback"); };
+    let levelAtRespawn = null;
+    let insideRespawn = false;
+    controller.respawn = () => {
+        calls.push("respawn");
+        levelAtRespawn = controller.currentLevel;
+        insideRespawn = true;
+        try {
+            originalRespawn();
+        } finally {
+            insideRespawn = false;
+        }
+    };
+    controller.randomizePlatforms = () => { calls.push("randomizePlatforms"); };
+    controller.randomizeHazards = () => { calls.push("randomizeHazards"); };
+    controller.updateLevelDifficultyBar = () => {
+        calls.push(insideRespawn ? "respawnHudSync" : "updateLevelDifficultyBar");
+    };
+    let transitionCalls = 0;
+    controller.beginLevelTransition = () => { transitionCalls++; };
+
+    controller.resetRunToLevelOne();
+    assert.deepEqual(calls, [
+        "finishPause",
+        "clearDeathReconstruction",
+        "clearDeathFeedback",
+        "respawn",
+        "respawnHudSync",
+        "randomizePlatforms",
+        "randomizeHazards",
+        "updateLevelDifficultyBar",
+    ]);
+    assert.equal(levelAtRespawn, 1, "respawn did not run with Level 1 authority");
+    assert.equal(controller.currentLevel, 1);
+    assert.equal(controller.centerX, 123);
+    assert.equal(controller.centerY, 456);
+    assert.equal(controller.vx, 0);
+    assert.equal(controller.vy, 0);
+    assert.equal(controller.activeGameplayPauseStartedAt, null);
+    assert.equal(controller.activeGameplayPauseAccumulatedMs, 0);
+    assert.equal(fixture.score.resetCount, 1, "ScoreManager.reset was not reached through respawn");
+    assert.equal(controller.enabled, false, "fresh-run reset enabled gameplay");
+    assert.equal(transitionCalls, 0, "fresh-run reset triggered a LevelTransition");
+    console.log("BallController fresh Level 1 reset composition + score/pause cleanup: PASS");
+}
+
 function testPauseUi() {
     const mobileLaya = createLaya({ mobile: true }).laya;
     const { PauseUI } = loadTs("src/PauseUI.ts", mobileLaya);
     let muted = false;
     let haptics = false;
     let requests = 0;
+    let resumes = 0;
+    let restarts = 0;
+    let mainMenuReturns = 0;
+    let ui = null;
     const actions = {
-        requestPause: () => requests++, resume() {}, restartCurrentAttempt() {},
+        requestPause: () => requests++,
+        resume: () => { resumes++; },
+        restartCurrentAttempt: () => { restarts++; },
+        returnToMainMenu: () => {
+            mainMenuReturns++;
+            ui.lockModalActions();
+        },
         toggleMute: () => { muted = !muted; },
         toggleHaptics: () => { haptics = !haptics; },
         isMuted: () => muted, isHapticsEnabled: () => haptics,
     };
-    const ui = new PauseUI(true, actions);
+    ui = new PauseUI(true, actions);
     const pauseButton = findNode(mobileLaya.stage, "PauseUI_PauseButton");
     assert.ok(pauseButton, "mobile Pause button was not mounted");
     assert.equal(pauseButton.zOrder, 10000);
@@ -992,17 +1207,39 @@ function testPauseUi() {
     const modal = findNode(mobileLaya.stage, "PauseUI_Modal");
     assert.ok(modal);
     assert.equal(modal.zOrder, 10004);
-    assert.ok(findNode(modal, "PauseUI_RESUME"));
-    assert.ok(findNode(modal, "PauseUI_RESTART"));
+    const mobilePanel = findNode(modal, "PauseUI_Panel");
+    assert.ok(mobilePanel);
+    assert.equal(mobilePanel.height, 576);
+    const mobileButtons = mobilePanel.children.filter((child) => child.pauseButtonModel);
+    assert.deepEqual(
+        mobileButtons.map((button) => button.pauseButtonModel.action),
+        ["RESUME", "RESTART", "MAIN_MENU", "MUTE", "HAPTICS"],
+    );
+    assert.deepEqual(mobileButtons.map((button) => button.y), [142, 212, 282, 352, 422]);
+    const resumeButton = findNode(modal, "PauseUI_RESUME");
+    const restartButton = findNode(modal, "PauseUI_RESTART");
+    const mainMenuButton = findNode(modal, "PauseUI_MAIN_MENU");
     const mute = findNode(modal, "PauseUI_MUTE");
     const haptic = findNode(modal, "PauseUI_HAPTICS");
-    assert.ok(mute && haptic, "mobile Pause settings are incomplete");
+    assert.ok(resumeButton && restartButton && mainMenuButton && mute && haptic,
+        "mobile Pause actions are incomplete");
+    assert.equal(mainMenuButton.pauseButtonModel.kind, "SECONDARY");
+    assert.equal(mainMenuButton.height, 56);
+    resumeButton.emit(mobileLaya.Event.CLICK);
+    restartButton.emit(mobileLaya.Event.CLICK);
     mute.emit(mobileLaya.Event.CLICK);
     haptic.emit(mobileLaya.Event.CLICK);
+    assert.equal(resumes, 1);
+    assert.equal(restarts, 1);
     assert.equal(muted, true);
     assert.equal(haptics, true);
     assert.equal(mute.children[1].children[0].text, "MUTE: ON");
     assert.equal(haptic.children[1].children[0].text, "HAPTICS: ON");
+    mainMenuButton.emit(mobileLaya.Event.CLICK);
+    mainMenuButton.emit(mobileLaya.Event.CLICK);
+    assert.equal(mainMenuReturns, 1, "modal lock allowed duplicate MAIN MENU activation");
+    assert.equal(mobileButtons.every((button) => button.mouseEnabled === false), true,
+        "modal lock left an action interactive");
 
     const desktopLaya = createLaya().laya;
     const DesktopPauseUI = loadTs("src/PauseUI.ts", desktopLaya).PauseUI;
@@ -1018,12 +1255,22 @@ function testPauseUi() {
     desktop.showPauseModal();
     const desktopModal = findNode(desktopLaya.stage, "PauseUI_Modal");
     assert.ok(desktopModal);
+    const desktopPanel = findNode(desktopModal, "PauseUI_Panel");
+    assert.ok(desktopPanel);
+    assert.equal(desktopPanel.height, 500);
+    const desktopButtons = desktopPanel.children.filter((child) => child.pauseButtonModel);
+    assert.deepEqual(
+        desktopButtons.map((button) => button.pauseButtonModel.action),
+        ["RESUME", "RESTART", "MAIN_MENU", "MUTE"],
+    );
+    assert.deepEqual(desktopButtons.map((button) => button.y), [142, 212, 282, 352]);
+    assert.equal(findNode(desktopModal, "PauseUI_MAIN_MENU").pauseButtonModel.kind, "SECONDARY");
     assert.equal(findNode(desktopModal, "PauseUI_HAPTICS"), null,
         "desktop modal exposed mobile Haptics");
     assert.ok(collectTexts(desktopModal).some((text) => text.includes("P  RESUME")));
     assert.equal(collectTexts(desktopModal).some((text) => text.includes("ESC")), false,
         "desktop Pause modal still teaches ESC Resume");
-    console.log("desktop/mobile icon-only Pause button + modal layering + live settings labels: PASS");
+    console.log("desktop/mobile Pause layout/order + MAIN MENU lock + unchanged settings actions: PASS");
 }
 
 function testStaticContracts() {
@@ -1060,12 +1307,30 @@ function testStaticContracts() {
     ], "Resume");
     const restart = between(main,
         "    private restartCurrentAttemptFromPause(): void",
-        "    private syncPausePresentation(): void");
+        "    private returnToMainMenuFromPause(): void");
     inOrder(restart, [
         "lockModalActions()", "resetAll()", "restartCurrentAttempt()",
         "synchronizeJumpInputBaseline()", "this.paused = false",
         "this.ballController.enabled = true", "setGameplayActive(true)", "hidePauseModal()",
     ], "Pause RESTART");
+    const returnToMenu = between(main,
+        "    private returnToMainMenuFromPause(): void",
+        "    private syncPausePresentation(): void");
+    inOrder(returnToMenu, [
+        "!this.paused || !this.ballController", "lockModalActions()", "resetAll()",
+        "setGameplayActive(false)", "resetRunToLevelOne()", "this.ballController.enabled = false",
+        "this.paused = false", "this.activeGameplay = false", "this.gameStarted = false",
+        "cancelPendingPauseIntent()", "hidePauseModal()", "IntroUI.returnToMainMenu(",
+        "onMainMenuEntered: () => BgmManager.playMenuBgm(this.mobileTouchSession)",
+        "syncPausePresentation()",
+    ], "Pause MAIN MENU return");
+    assert.equal((returnToMenu.match(/BgmManager\.playMenuBgm/g) || []).length, 1,
+        "Pause return introduced competing Menu BGM requests");
+    assert.doesNotMatch(
+        returnToMenu.slice(0, returnToMenu.indexOf("IntroUI.returnToMainMenu(")),
+        /BgmManager|playMenuBgm/,
+        "Pause return switched BGM before IntroUI lifecycle entry",
+    );
     const pauseKey = between(main,
         "    private isPauseKey(event: any): boolean",
         "    onDestroy(): void");
@@ -1100,6 +1365,38 @@ function testStaticContracts() {
         "    private startDeathFeedback(): void").match(/triggerDeathHaptics\(\)/g) || []).length, 1);
     assert.doesNotMatch(ball, /localStorage|sessionStorage|document\.cookie/);
 
+    const freshRunReset = between(ball,
+        "    public resetRunToLevelOne(): void",
+        "    // \u80dc\u5229\u540e\u8fdb\u5165\u4e0b\u4e00\u5173");
+    inOrder(freshRunReset, [
+        "finishGameplayPauseAccounting()", "this.activeGameplayPauseStartedAt = null",
+        "this.activeGameplayPauseAccumulatedMs = 0", "clearDeathReconstruction()",
+        "clearDeathFeedback()", "this.currentLevel = 1", "respawn()",
+        "randomizePlatforms()", "randomizeHazards()", "updateLevelDifficultyBar()",
+    ], "fresh Level 1 reset");
+    assert.doesNotMatch(freshRunReset, /ScoreManager|beginLevelTransition|\.enabled\s*=/,
+        "fresh-run reset bypassed respawn, triggered transition, or enabled gameplay");
+    const respawn = between(ball,
+        "    private respawn(): void",
+        "    public restartCurrentAttempt(): void");
+    assert.match(respawn, /ScoreManager\.instance\.reset\(\)/,
+        "respawn no longer owns ScoreManager reset");
+
+    const introReentry = between(intro,
+        "    public static returnToMainMenu(",
+        "    private static createShell(): void");
+    inOrder(introReentry, [
+        "!IntroUI.container || !IntroUI.panel", "IntroUI.startHandler = onStart",
+        "IntroUI.lifecycleCallbacks = lifecycleCallbacks",
+        "IntroUI.mobileTouchSession = mobileTouchSession", "IntroUI.started = false",
+        "IntroUI.view = IntroUI.MAIN_MENU", "IntroUI.selectedIndex = 0",
+        "IntroUI.resetCoverState()", "IntroUI.panel.visible = true",
+        "IntroUI.container.visible = true", "IntroUI.renderMainMenu()",
+        "IntroUI.bindKeyboard()", "IntroUI.lifecycleCallbacks.onMainMenuEntered?.()",
+    ], "IntroUI Main Menu re-entry");
+    assert.doesNotMatch(introReentry, /IntroUI\.show\(|renderCover\(/,
+        "Main Menu re-entry routed through Cover");
+
     assert.match(main, /ScoreManager\.instance\.setMobileTouchSession\(this\.mobileTouchSession\)/);
     assert.match(score, /restartHint\.visible\s*=\s*!this\.mobileTouchSession/);
     assert.match(intro,
@@ -1117,6 +1414,11 @@ function testStaticContracts() {
     assert.match(intro, /code === "KeyP" \|\| keyCode === 80[\s\S]*?return "P"/);
     assert.match(pause, /PAUSE_BUTTON_Z:\s*number\s*=\s*10000/);
     assert.match(pause, /PAUSE_MODAL_Z:\s*number\s*=\s*10004/);
+    assert.match(pause, /returnToMainMenu\(\): void/);
+    assert.match(pause, /"RESUME" \| "RESTART" \| "MAIN_MENU" \| "MUTE" \| "HAPTICS"/);
+    assert.match(pause, /const panelHeight = this\.mobileTouchSession \? 576 : 500/);
+    assert.match(pause,
+        /createModalButton\("MAIN MENU", "MAIN_MENU", "SECONDARY", buttonWidth, buttonHeight\)/);
     assert.match(pause,
         /const width = 64;[\s\S]*?const visibleWidth = 50;[\s\S]*?const visibleRightInset = 4;[\s\S]*?const visibleX = width - visibleRightInset - visibleWidth;/);
     assert.match(pause,
@@ -1168,13 +1470,16 @@ function testStaticContracts() {
 testCoverHoldStateMachine();
 testCoverPointerOwnershipAndFreshDown();
 testIntroLifecycleCallbacks();
+testIntroMainMenuReentry();
 testBgmRoleModelAndFailureRollback();
 testMainAudioLifecycle();
 testStaticContracts();
 testGateAndRace();
 testFreezeTouchAndLatch();
+testReturnToMainMenuLifecycle();
 testMobileBackgroundAutoPause();
 testLogicalClockAndJump();
 testRestartAndHaptics();
+testFreshLevelOneReset();
 testPauseUi();
 console.log("pause verification: PASS");

@@ -2905,6 +2905,19 @@ export default class BallController extends Laya.Script {
         this.respawn();
     }
 
+    public resetRunToLevelOne(): void {
+        this.finishGameplayPauseAccounting();
+        this.activeGameplayPauseStartedAt = null;
+        this.activeGameplayPauseAccumulatedMs = 0;
+        this.clearDeathReconstruction();
+        this.clearDeathFeedback();
+        this.currentLevel = 1;
+        this.respawn();
+        this.randomizePlatforms();
+        this.randomizeHazards();
+        this.updateLevelDifficultyBar();
+    }
+
     // 胜利后进入下一关：复用 respawn() 的全部重置，再重新随机平台布局
     // 胜利后按 R 重开本局，并切换到下一关的随机平台布局
     private restartGame(): void {

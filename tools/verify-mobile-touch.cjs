@@ -1272,6 +1272,16 @@ function runTutorialMountedSmoke() {
 function runStaticContracts() {
     const ballSource = read(ballPath);
     const headBallSource = headFile("src/BallController.ts");
+    const freshRunReset = extractBetween(
+        ballSource,
+        "    public resetRunToLevelOne(): void",
+        "    // \u80dc\u5229\u540e\u8fdb\u5165\u4e0b\u4e00\u5173",
+    );
+    assert.equal(
+        ballSource.replace(freshRunReset, ""),
+        headBallSource,
+        "BallController changed outside the authorized resetRunToLevelOne seam",
+    );
     const protectedStep = extractBetween(ballSource, "    public stepPhysics(", "    private levelTransitionHandler:");
     const headProtectedStep = extractBetween(headBallSource, "    public stepPhysics(", "    private levelTransitionHandler:");
     assert.equal(
@@ -1304,6 +1314,16 @@ function runStaticContracts() {
     const mainSource = read(mainPath);
     const introSource = read(introPath);
     const headIntroSource = headFile("src/IntroUI.ts");
+    const introReentry = extractBetween(
+        introSource,
+        "    public static returnToMainMenu(",
+        "    private static createShell(): void",
+    );
+    assert.equal(
+        introSource.replace(introReentry, ""),
+        headIntroSource,
+        "IntroUI changed outside the authorized returnToMainMenu seam",
+    );
     const scoreSource = read(scorePath);
     const tutorialSource = read(tutorialPath);
     assert.match(touchSource, /innerWidth/);
@@ -1490,10 +1510,16 @@ function runStaticContracts() {
     const changed = execFileSync("git", ["diff", "--name-only"], { cwd: repoRoot, encoding: "utf8" })
         .split(/\r?\n/)
         .filter(Boolean);
-    assert.deepEqual([...changed].sort(), ["src/IntroUI.ts", "tools/verify-mobile-touch.cjs"],
-        "tracked diff escaped the two-file writable allowlist");
+    assert.deepEqual([...changed].sort(), [
+        "src/BallController.ts",
+        "src/IntroUI.ts",
+        "src/Main.ts",
+        "src/PauseUI.ts",
+        "tools/verify-mobile-touch.cjs",
+        "verify-pause.cjs",
+    ], "tracked diff escaped the PAUSE -> MAIN MENU writable allowlist");
     assert.equal(changed.some((file) => /(?:^|\/)SfxManager\.ts$/.test(file)), false);
-    assert.equal(changed.some((file) => /^(?:src\/TouchController\.ts|src\/TouchTutorialUI\.ts|src\/BallController\.ts|src\/ScoreManager\.ts)$/.test(file)), false);
+    assert.equal(changed.some((file) => /^(?:src\/(?:TouchController|TouchTutorialUI|ScoreManager|LevelTransition|BgmManager|SfxManager)\.ts)$/.test(file)), false);
     assert.equal(changed.includes("assets/Scene.ls"), false);
     assert.equal(changed.some((file) => /^tools\/(?:verify-l4|l4-.*(?:snapshot|baseline))/.test(file)), false);
     console.log("world layout, protected touch/gameplay files, and L4 fixtures unchanged: PASS");
