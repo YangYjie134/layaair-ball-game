@@ -101,6 +101,7 @@ export class ScoreManager {
     private nextLevelButton: any = null;
     private nextLevelLabel: any = null;
     private restartHint: any = null;
+    private winHandler: ((score: number) => void) | null = null;
     private mobileTouchSession: boolean = false;
     private winGoldenAura: any = null;
     private winGoldenGlyphSystems: WinGlyphAuraSystem[] = [];
@@ -117,9 +118,16 @@ export class ScoreManager {
     private platformEnergyVisuals: Map<any, any> = new Map<any, any>();
     private activeEnergyAbsorptions: Map<any, () => void> = new Map<any, () => void>();
     private readonly energyAbsorptionDurationMs: number = 500;
+    private readonly transientScoreFeedback: Map<any, () => void> = new Map<any, () => void>();
+    private scoreHudPulseCleanup: (() => void) | null = null;
+    private scoreHudEntranceCleanup: (() => void) | null = null;
+    private readonly scoreFeedbackDurationMs: number = 500;
+    private readonly scoreHudPulseDurationMs: number = 200;
+    private readonly scoreHudEntranceDurationMs: number = 320;
 
     // 初始化分数管理器，重置分数状态并创建界面文本
     public init(): void {
+        this.clearTransientFeedback();
         // 重置分数
         this.score = 0;
         // 重置获胜状态
@@ -131,11 +139,6 @@ export class ScoreManager {
         // 创建分数显示文本（如果还未创建）
         if (!this.scoreText) {
             this.createScoreText();
-        }
-
-        // 创建获胜提示文本（如果还未创建）
-        if (!this.winText) {
-            this.createWinText();
         }
 
         // 更新分数显示
@@ -151,6 +154,10 @@ export class ScoreManager {
         this.nextLevelHandler = handler;
     }
 
+    public setWinHandler(handler: ((score: number) => void) | null): void {
+        this.winHandler = handler;
+    }
+
     public setMobileTouchSession(mobileTouchSession: boolean): void {
         this.mobileTouchSession = mobileTouchSession;
         if (this.restartHint) {
@@ -164,6 +171,7 @@ export class ScoreManager {
         const hudHeight = 44;
 
         this.scoreHud = new Laya.Sprite();
+        this.scoreHud.name = "WPH_ScoreHud";
         this.scoreHud.x = 40;
         this.scoreHud.y = 32;
         this.scoreHud.width = hudWidth;
@@ -221,7 +229,7 @@ export class ScoreManager {
         }
 
         this.scoreText = new Laya.Text();
-        this.scoreText.text = "00 / 05";
+        this.scoreText.text = "0 / 5";
         this.scoreText.font = "Arial";
         this.scoreText.fontSize = 19;
         this.scoreText.color = "#E8FCFF";
@@ -874,10 +882,10 @@ export class ScoreManager {
         this.scoredPlatforms.add(platformName);
         // 增加分数
         this.score++;
-        this.playScoreFeedback(platform);
 
         // 更新分数显示
         this.updateScoreText();
+        this.playScoreFeedback(platform);
         // 检查是否获胜
         this.checkWin();
 
@@ -892,6 +900,256 @@ export class ScoreManager {
     private playScoreFeedback(platform: any): void {
         SfxManager.playScore();
         this.beginPlatformEnergyAbsorption(platform);
+        this.playScoreHudPulse();
+        this.spawnTransientScoreFeedback(platform);
+    }
+
+    private spawnTransientScoreFeedback(platform: any): void {
+        const stage = Laya.stage;
+        if (!stage || typeof stage.addChild !== "function") return;
+
+        const position = this.getPlatformFeedbackStagePosition(platform);
+        const root = new Laya.Sprite();
+        root.name = "WPH_ScoreGainFeedback";
+        root.width = 190;
+        root.height = 68;
+        root.x = Math.max(8, Math.min((Number(stage.width) || 1334) - root.width - 8, position.x - root.width * 0.5));
+        root.y = Math.max(12, Math.min((Number(stage.height) || 750) - root.height - 12, position.y - 78));
+        root.zOrder = 10001;
+        root.mouseEnabled = false;
+        root.mouseThrough = true;
+        root.alpha = 1;
+        root.scaleX = 0.8;
+        root.scaleY = 0.8;
+
+        const gain = new Laya.Text();
+        gain.name = "WPH_ScoreGainValue";
+        gain.text = "+1";
+        gain.font = "Arial";
+        gain.fontSize = 28;
+        gain.bold = true;
+        gain.color = "#F4FFFF";
+        gain.stroke = 2;
+        gain.strokeColor = "#0A7288";
+        gain.width = root.width;
+        gain.height = 34;
+        gain.align = "center";
+        gain.valign = "middle";
+        gain.mouseEnabled = false;
+        root.addChild(gain);
+
+        const progress = new Laya.Text();
+        progress.name = "WPH_ScoreGainProgress";
+        progress.text = "SCORE " + this.score + " / " + this.winScore;
+        progress.font = "Arial";
+        progress.fontSize = 16;
+        progress.bold = true;
+        progress.color = "#83F7FF";
+        progress.x = 5;
+        progress.y = 34;
+        progress.width = root.width - 10;
+        progress.height = 26;
+        progress.align = "center";
+        progress.valign = "middle";
+        progress.mouseEnabled = false;
+        root.addChild(progress);
+
+        const sparkVectors = [
+            { x: -30, y: -15 },
+            { x: -17, y: -28 },
+            { x: 0, y: -34 },
+            { x: 18, y: -27 },
+            { x: 31, y: -13 },
+        ];
+        const sparks: Array<{ node: any; x: number; y: number }> = [];
+        for (let index = 0; index < sparkVectors.length; index++) {
+            const vector = sparkVectors[index];
+            const spark = new Laya.Sprite();
+            spark.name = "WPH_ScoreSpark_" + index;
+            spark.x = root.width * 0.5;
+            spark.y = 24;
+            spark.mouseEnabled = false;
+            spark.graphics.drawCircle(0, 0, index % 2 === 0 ? 2 : 1.5, index % 2 === 0 ? "#35E9FF" : "#A878FF");
+            root.addChild(spark);
+            sparks.push({ node: spark, x: vector.x, y: vector.y });
+        }
+
+        stage.addChild(root);
+        const startY = root.y;
+        const startedAt = this.readUiNow();
+        let cleaned = false;
+        let cleanup = (): void => {};
+        const update = (): void => {
+            if (cleaned || root.destroyed) {
+                cleanup();
+                return;
+            }
+            const elapsed = Math.max(0, this.readUiNow() - startedAt);
+            const normalized = Math.min(1, elapsed / this.scoreFeedbackDurationMs);
+            const rise = 1 - Math.pow(1 - normalized, 2);
+            root.y = startY - 42 * rise;
+            root.alpha = normalized <= 0.2 ? 1 : Math.max(0, 1 - (normalized - 0.2) / 0.8);
+            const scale = normalized <= 0.2
+                ? 0.8 + normalized / 0.2 * 0.3
+                : 1.1 - (normalized - 0.2) / 0.8 * 0.1;
+            root.scaleX = scale;
+            root.scaleY = scale;
+            for (const spark of sparks) {
+                spark.node.x = root.width * 0.5 + spark.x * rise;
+                spark.node.y = 24 + spark.y * rise;
+                spark.node.alpha = Math.max(0, 1 - normalized);
+            }
+            if (normalized >= 1) cleanup();
+        };
+        cleanup = (): void => {
+            if (cleaned) return;
+            cleaned = true;
+            if (typeof Laya.timer?.clear === "function") {
+                Laya.timer.clear(root, update);
+                Laya.timer.clear(root, cleanup);
+            }
+            this.transientScoreFeedback.delete(root);
+            this.destroyPlatformEnergyNode(root);
+        };
+        this.transientScoreFeedback.set(root, cleanup);
+        update();
+        if (typeof Laya.timer?.frameLoop === "function") {
+            Laya.timer.frameLoop(1, root, update);
+        } else if (typeof Laya.timer?.once === "function") {
+            Laya.timer.once(this.scoreFeedbackDurationMs, root, cleanup);
+        }
+    }
+
+    private getPlatformFeedbackStagePosition(platform: any): { x: number; y: number } {
+        const localX = Math.max(0, Number(platform?.width) || 0) * 0.5;
+        if (platform && typeof platform.localToGlobal === "function" && Laya.Point) {
+            try {
+                const converted = platform.localToGlobal(new Laya.Point(localX, 0), true);
+                if (Number.isFinite(Number(converted?.x)) && Number.isFinite(Number(converted?.y))) {
+                    return { x: Number(converted.x), y: Number(converted.y) };
+                }
+            } catch (_) {
+                // Fall through to the same parent-chain fallback used by other scene visuals.
+            }
+        }
+
+        let x = localX;
+        let y = 0;
+        let node = platform;
+        let guard = 0;
+        while (node && node !== Laya.stage && guard < 32) {
+            x += Number(node.x) || 0;
+            y += Number(node.y) || 0;
+            node = node.parent;
+            guard++;
+        }
+        return { x, y };
+    }
+
+    private playScoreHudPulse(): void {
+        this.stopScoreHudPulse();
+        const hud = this.scoreHud;
+        if (!hud) return;
+
+        const startedAt = this.readUiNow();
+        let stopped = false;
+        const update = (): void => {
+            if (stopped || hud.destroyed) {
+                stop();
+                return;
+            }
+            const elapsed = Math.max(0, this.readUiNow() - startedAt);
+            const normalized = Math.min(1, elapsed / this.scoreHudPulseDurationMs);
+            const scale = normalized <= 0.5
+                ? 1 + normalized / 0.5 * 0.1
+                : 1.1 - (normalized - 0.5) / 0.5 * 0.1;
+            hud.scaleX = scale;
+            hud.scaleY = scale;
+            if (normalized >= 1) stop();
+        };
+        const stop = (): void => {
+            if (stopped) return;
+            stopped = true;
+            if (typeof Laya.timer?.clear === "function") Laya.timer.clear(hud, update);
+            hud.scaleX = 1;
+            hud.scaleY = 1;
+            if (this.scoreHudPulseCleanup === stop) this.scoreHudPulseCleanup = null;
+        };
+        this.scoreHudPulseCleanup = stop;
+        update();
+        if (typeof Laya.timer?.frameLoop === "function") {
+            Laya.timer.frameLoop(1, hud, update);
+        } else if (typeof Laya.timer?.once === "function") {
+            Laya.timer.once(this.scoreHudPulseDurationMs, hud, stop);
+        }
+    }
+
+    private stopScoreHudPulse(): void {
+        const cleanup = this.scoreHudPulseCleanup;
+        this.scoreHudPulseCleanup = null;
+        if (cleanup) cleanup();
+        if (this.scoreHud) {
+            this.scoreHud.scaleX = 1;
+            this.scoreHud.scaleY = 1;
+        }
+    }
+
+    public playLevelHudEntrance(): void {
+        this.finishLevelHudEntrance();
+        const hud = this.scoreHud;
+        if (!hud) return;
+
+        hud.x = 10;
+        hud.alpha = 0;
+        const startedAt = this.readUiNow();
+        let finished = false;
+        const update = (): void => {
+            if (finished || hud.destroyed) {
+                finish();
+                return;
+            }
+            const normalized = Math.min(1, Math.max(0, this.readUiNow() - startedAt) / this.scoreHudEntranceDurationMs);
+            const eased = 1 - Math.pow(1 - normalized, 3);
+            hud.x = 10 + 30 * eased;
+            hud.alpha = eased;
+            if (normalized >= 1) finish();
+        };
+        const finish = (): void => {
+            if (finished) return;
+            finished = true;
+            if (typeof Laya.timer?.clear === "function") Laya.timer.clear(hud, update);
+            hud.x = 40;
+            hud.alpha = 1;
+            if (this.scoreHudEntranceCleanup === finish) this.scoreHudEntranceCleanup = null;
+        };
+        this.scoreHudEntranceCleanup = finish;
+        update();
+        if (typeof Laya.timer?.frameLoop === "function") {
+            Laya.timer.frameLoop(1, hud, update);
+        } else if (typeof Laya.timer?.once === "function") {
+            Laya.timer.once(this.scoreHudEntranceDurationMs, hud, finish);
+        }
+    }
+
+    public finishLevelHudEntrance(): void {
+        const cleanup = this.scoreHudEntranceCleanup;
+        this.scoreHudEntranceCleanup = null;
+        if (cleanup) cleanup();
+        if (this.scoreHud) {
+            this.scoreHud.x = 40;
+            this.scoreHud.alpha = 1;
+        }
+    }
+
+    public clearTransientFeedback(): void {
+        for (const cleanup of Array.from(this.transientScoreFeedback.values())) cleanup();
+        this.transientScoreFeedback.clear();
+        this.stopScoreHudPulse();
+    }
+
+    private readUiNow(): number {
+        const timerValue = Number(Laya.timer?.currTimer);
+        return Number.isFinite(timerValue) ? timerValue : Date.now();
     }
 
     private beginPlatformEnergyAbsorption(platform: any): void {
@@ -1195,10 +1453,7 @@ export class ScoreManager {
             return;
         }
 
-        // 使用两位数字展示当前分数，并同步五段进度格。
-        const currentScore = this.score < 10 ? "0" + this.score : String(this.score);
-        const targetScore = this.winScore < 10 ? "0" + this.winScore : String(this.winScore);
-        this.scoreText.text = currentScore + " / " + targetScore;
+        this.scoreText.text = this.score + " / " + this.winScore;
         this.updateScoreSegments();
     }
 
@@ -1212,8 +1467,14 @@ export class ScoreManager {
         // 标记为已获胜
         this.hasWon = true;
         SfxManager.playClear();
-        // 显示获胜文本
-        this.showWinText();
+        const handler = this.winHandler;
+        if (handler) {
+            try {
+                handler(this.score);
+            } catch (error) {
+                console.error("Level completion handler failed.", error);
+            }
+        }
 
         console.log("Game clear");
     }
@@ -1248,6 +1509,8 @@ export class ScoreManager {
 
     // 重置分数管理器状态
     public reset(): void {
+        this.clearTransientFeedback();
+        this.finishLevelHudEntrance();
         // 重置分数
         this.score = 0;
         // 重置获胜状态
@@ -1274,5 +1537,9 @@ export class ScoreManager {
     // 是否已经胜利（供外部判断是否允许按 R 重开）
     public isWon(): boolean {
         return this.hasWon;
+    }
+
+    public getWinScore(): number {
+        return this.winScore;
     }
 }

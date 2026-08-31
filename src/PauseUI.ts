@@ -6,9 +6,7 @@ export interface PauseUIActions {
     restartCurrentAttempt(): void;
     returnToMainMenu(): void;
     toggleMute(): void;
-    toggleHaptics(): void;
     isMuted(): boolean;
-    isHapticsEnabled(): boolean;
 }
 
 type PauseButtonKind = "PRIMARY" | "SECONDARY" | "SETTING";
@@ -19,7 +17,7 @@ interface PauseModalButton {
     glow: any;
     label: any;
     kind: PauseButtonKind;
-    action: "RESUME" | "RESTART" | "MAIN_MENU" | "MUTE" | "HAPTICS";
+    action: "RESUME" | "RESTART" | "MAIN_MENU" | "MUTE";
 }
 
 /** Shared cyber presentation for the gameplay Pause control and Pause modal. */
@@ -33,7 +31,6 @@ export class PauseUI {
     private modalRoot: any = null;
     private modalButtons: PauseModalButton[] = [];
     private muteButton: PauseModalButton | null = null;
-    private hapticsButton: PauseModalButton | null = null;
     private modalActionLocked: boolean = false;
     private destroyed: boolean = false;
 
@@ -64,9 +61,6 @@ export class PauseUI {
         if (this.muteButton) {
             this.muteButton.label.text = "MUTE: " + (this.actions.isMuted() ? "ON" : "OFF");
         }
-        if (this.hapticsButton) {
-            this.hapticsButton.label.text = "HAPTICS: " + (this.actions.isHapticsEnabled() ? "ON" : "OFF");
-        }
     }
 
     public lockModalActions(): boolean {
@@ -87,7 +81,6 @@ export class PauseUI {
         this.modalRoot = null;
         this.modalButtons = [];
         this.muteButton = null;
-        this.hapticsButton = null;
         this.modalActionLocked = false;
     }
 
@@ -184,7 +177,7 @@ export class PauseUI {
         const stageWidth = Math.max(1, Number(Laya.stage?.width) || 1334);
         const stageHeight = Math.max(1, Number(Laya.stage?.height) || 750);
         const panelWidth = 520;
-        const panelHeight = this.mobileTouchSession ? 576 : 500;
+        const panelHeight = 500;
 
         const root = new Laya.Sprite();
         root.name = "PauseUI_Modal";
@@ -290,16 +283,6 @@ export class PauseUI {
         panel.addChild(mute.root);
         this.modalButtons.push(mute);
         this.muteButton = mute;
-
-        if (this.mobileTouchSession) {
-            buttonY += 70;
-            const haptics = this.createModalButton("HAPTICS: OFF", "HAPTICS", "SETTING", buttonWidth, buttonHeight);
-            haptics.root.x = buttonX;
-            haptics.root.y = buttonY;
-            panel.addChild(haptics.root);
-            this.modalButtons.push(haptics);
-            this.hapticsButton = haptics;
-        }
 
         const footer = this.createText(
             this.mobileTouchSession ? "TOUCH SESSION  //  CURRENT LEVEL LOCKED" : "P  RESUME  //  CURRENT LEVEL LOCKED",
@@ -422,10 +405,7 @@ export class PauseUI {
         if (button.action === "MUTE") {
             this.actions.toggleMute();
             this.refreshSettings();
-            return;
         }
-        this.actions.toggleHaptics();
-        this.refreshSettings();
     }
 
     private onModalButtonOver(event: any): void {

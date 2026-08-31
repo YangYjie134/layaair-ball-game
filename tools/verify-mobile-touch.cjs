@@ -231,13 +231,25 @@ function runLayoutSmoke() {
     assert.equal(layout.left.visibleY, 558);
     assert.equal(layout.right.visibleY, 558);
     assert.equal(layout.jump.visibleY, 548);
-    assert.equal(layout.left.hitSize, 110);
-    assert.equal(layout.right.hitSize, 110);
-    assert.equal(layout.jump.hitSize, 136);
+    assert.equal(layout.left.hitX, 32);
+    assert.equal(layout.left.hitSize, 120);
+    assert.equal(layout.right.hitX, 168);
+    assert.equal(layout.right.hitSize, 120);
+    assert.equal(layout.jump.hitX, 1147);
+    assert.equal(layout.jump.hitSize, 150);
 
     const directionGap = layout.right.hitX - (layout.left.hitX + layout.left.hitSize);
-    assert.equal(directionGap, 2);
+    assert.equal(directionGap, 16);
     assert.ok(directionGap > 0, "LEFT and RIGHT hit areas overlap");
+    const overlaps = (a, b) => (
+        a.hitX < b.hitX + b.hitSize
+        && a.hitX + a.hitSize > b.hitX
+        && a.hitY < b.hitY + b.hitSize
+        && a.hitY + a.hitSize > b.hitY
+    );
+    assert.equal(overlaps(layout.left, layout.right), false, "LEFT and RIGHT hit areas overlap");
+    assert.equal(overlaps(layout.left, layout.jump), false, "LEFT and JUMP hit areas overlap");
+    assert.equal(overlaps(layout.right, layout.jump), false, "RIGHT and JUMP hit areas overlap");
     for (const control of ["left", "right", "jump"]) {
         const bounds = layout[control];
         assert.ok(bounds.hitX >= 0 && bounds.hitY >= 0, `${control} hit area leaves the stage`);
@@ -1272,16 +1284,6 @@ function runTutorialMountedSmoke() {
 function runStaticContracts() {
     const ballSource = read(ballPath);
     const headBallSource = headFile("src/BallController.ts");
-    const freshRunReset = extractBetween(
-        ballSource,
-        "    public resetRunToLevelOne(): void",
-        "    // \u80dc\u5229\u540e\u8fdb\u5165\u4e0b\u4e00\u5173",
-    );
-    assert.equal(
-        ballSource.replace(freshRunReset, ""),
-        headBallSource,
-        "BallController changed outside the authorized resetRunToLevelOne seam",
-    );
     const protectedStep = extractBetween(ballSource, "    public stepPhysics(", "    private levelTransitionHandler:");
     const headProtectedStep = extractBetween(headBallSource, "    public stepPhysics(", "    private levelTransitionHandler:");
     assert.equal(
@@ -1314,16 +1316,7 @@ function runStaticContracts() {
     const mainSource = read(mainPath);
     const introSource = read(introPath);
     const headIntroSource = headFile("src/IntroUI.ts");
-    const introReentry = extractBetween(
-        introSource,
-        "    public static returnToMainMenu(",
-        "    private static createShell(): void",
-    );
-    assert.equal(
-        introSource.replace(introReentry, ""),
-        headIntroSource,
-        "IntroUI changed outside the authorized returnToMainMenu seam",
-    );
+    assert.equal(introSource, headIntroSource, "IntroUI changed during the player-feedback hotfix");
     const scoreSource = read(scorePath);
     const tutorialSource = read(tutorialPath);
     assert.match(touchSource, /innerWidth/);
@@ -1468,8 +1461,11 @@ function runStaticContracts() {
     assert.doesNotMatch(mobileHelpSource, /PRESS\s+[PMR]|KEYBOARD|\bPAUSE\b|\bESC\b|\bENTER\b/i);
     assert.match(introSource, /private static renderMobileHowToPlay\(\): void/);
     assert.match(introSource, /"MOVE"[\s\S]*?"LEFT\s+\/\s+RIGHT"[\s\S]*?"JUMP"/);
-    assert.match(scoreSource, /nextLevelLabel\.text\s*=\s*"NEXT LEVEL"/);
-    assert.match(scoreSource, /restartHint\.text\s*=\s*"PRESS R"[\s\S]*?restartHint\.visible\s*=\s*!this\.mobileTouchSession/);
+    const winCheckSource = extractBetween(scoreSource, "    private checkWin(): void", "    // 显示获胜提示文本");
+    assert.doesNotMatch(winCheckSource, /showWinText|nextLevelHandler/,
+        "live win path still exposes the legacy click-to-advance card");
+    assert.match(winCheckSource, /handler\(this\.score\)/,
+        "live win path does not notify Main with the authoritative score");
     assert.equal((tutorialSource.match(/"STEP [12]\s+\/\s+(?:MOVE|JUMP)"/g) || []).length, 2,
         "first-use mobile tutorial must remain exactly MOVE then JUMP");
     assert.doesNotMatch(tutorialSource, /localStorage|sessionStorage|document\.cookie/);
@@ -1507,22 +1503,116 @@ function runStaticContracts() {
     }
     console.log("physics constants unchanged: PASS");
 
+    const headScoreSource = headFile("src/ScoreManager.ts");
+    const scoringRules = extractBetween(
+        scoreSource,
+        "    public addPlatformScore(platform: any): void {",
+        "        // 增加分数",
+    );
+    const headScoringRules = extractBetween(
+        headScoreSource,
+        "    public addPlatformScore(platform: any): void {",
+        "        // 增加分数",
+    );
+    assert.equal(scoringRules, headScoringRules, "score eligibility or deduplication rules changed");
+    const addScoreSource = extractBetween(
+        scoreSource,
+        "    public addPlatformScore(platform: any): void {",
+        "    private playScoreFeedback(platform: any): void {",
+    );
+    assert.equal((addScoreSource.match(/this\.score\+\+/g) || []).length, 1,
+        "real score event no longer increments exactly once");
+    assertSourceOrder(addScoreSource,
+        ["this.score++;", "this.updateScoreText();", "this.playScoreFeedback(platform);", "this.checkWin();"],
+        "authoritative score feedback order");
+    assert.match(scoreSource, /gain\.text = "\+1"/);
+    assert.match(scoreSource, /progress\.text = "SCORE " \+ this\.score \+ " \/ " \+ this\.winScore/);
+    assert.match(scoreSource, /scoreFeedbackDurationMs:\s*number\s*=\s*500/);
+    assert.match(scoreSource, /root\.y = startY - 42 \* rise/);
+    assert.match(scoreSource, /platform\.localToGlobal\(new Laya\.Point\(localX, 0\), true\)/);
+    assert.match(scoreSource, /while \(node && node !== Laya\.stage && guard < 32\)/);
+    assert.match(scoreSource, /scoreHudPulseDurationMs:\s*number\s*=\s*200/);
+    assert.match(scoreSource, /private stopScoreHudPulse\(\): void[\s\S]*?scaleX = 1;[\s\S]*?scaleY = 1;/);
+    assert.match(scoreSource, /public clearTransientFeedback\(\): void/);
+    assert.match(extractBetween(scoreSource, "    public reset(): void {", "    // 获取当前分数"),
+        /clearTransientFeedback\(\)/);
+    assert.match(extractBetween(ballSource, "    private handleDeath(): void", "    private startDeathFeedback(): void"),
+        /ScoreManager\.instance\.clearTransientFeedback\(\)/);
+    console.log("authoritative +1 + positioned transient + bounded pulse + cleanup: PASS");
+
+    assert.match(scoreSource, /scoreHudEntranceDurationMs:\s*number\s*=\s*320/);
+    assert.match(scoreSource, /this\.scoreText\.text = this\.score \+ " \/ " \+ this\.winScore/);
+    assert.match(ballSource, /levelLabel\.text = "LEVEL " \+ this\.currentLevel/);
+    assert.match(ballSource, /if \(levelLabel\) levelLabel\.text = "LEVEL " \+ this\.currentLevel/);
+    assert.match(scoreSource, /hud\.x = 10;[\s\S]*?hud\.alpha = 0;[\s\S]*?hud\.x = 40;[\s\S]*?hud\.alpha = 1/);
+    assert.match(ballSource, /public playLevelHudEntrance\(\): void/);
+    assert.match(mainSource,
+        /ScoreManager\.instance\.playLevelHudEntrance\(\);[\s\S]*?this\.ballController\?\.playLevelHudEntrance\(\)/);
+
+    const transitionSource = read(path.join(repoRoot, "src", "LevelTransition.ts"));
+    assert.doesNotMatch(transitionSource, /SYSTEM INITIALIZING|SYSTEM READY|SYNCHRONIZING|\d+%/);
+    assert.match(transitionSource, /"LEVEL " \+ this\.level \+ " CLEAR!"/);
+    assert.match(transitionSource, /"NEXT: LEVEL " \+ this\.nextLevel/);
+    assert.match(transitionSource, /this\.mode === "CLEAR" \? 1400 : 960/);
+    assert.match(transitionSource, /"GET READY"/);
+    assert.match(mainSource, /Laya\.timer\.once\(320, this, this\.presentLevelCompletion\)/);
+    assert.match(mainSource, /LevelTransition\.showClear\(completedLevel, completedScore, completedLevel \+ 1/);
+    assert.match(mainSource, /advanceAfterWin\(false\)/);
+    assert.doesNotMatch(mainSource, /setNextLevelHandler/);
+    console.log("paired HUD entrance + delayed automatic L1-L3 clear presentation: PASS");
+
+    const restartGameSource = extractBetween(
+        ballSource,
+        "    private restartGame(showTransition: boolean = true): boolean {",
+        "    public advanceAfterWin",
+    );
+    assert.match(restartGameSource, /if \(this\.currentLevel >= this\.maxLevel\)/);
+    assert.doesNotMatch(restartGameSource, /this\.currentLevel\s*=\s*1/);
+    const completeSource = read(path.join(repoRoot, "src", "GameCompleteUI.ts"));
+    for (const text of ["GAME COMPLETE", "ALL 4 LEVELS CLEARED!", "FINAL LEVEL SCORE", "PLAY AGAIN", "MAIN MENU"]) {
+        assert.ok(completeSource.includes(`"${text}"`), `GameCompleteUI missing ${text}`);
+    }
+    assert.match(completeSource, /if \(this\.destroyed \|\| this\.actionLocked\) return/);
+    assert.match(completeSource, /candidate\.root\.mouseEnabled = false/);
+    assert.match(mainSource, /this\.completionLevel === controller\.getMaxLevel\(\)/);
+    assert.match(mainSource, /this\.gameCompleteUI = new GameCompleteUI/);
+    assert.match(mainSource, /this\.touchController\?\.setGameplayActive\(false\);[\s\S]*?this\.ballController\.enabled = false/);
+    const playAgainSource = extractBetween(
+        mainSource,
+        "    private playAgainFromGameComplete(): void",
+        "    private returnToMainMenuFromGameComplete(): void",
+    );
+    assert.match(playAgainSource, /resetRunToLevelOne\(\)/);
+    assert.match(playAgainSource, /showLevelTransition\(1, \(\) => this\.enterLevelOne\(\)\)/);
+    assert.match(mainSource, /private returnToMainMenuFromGameComplete\(\): void \{[\s\S]*?this\.returnToMainMenu\(\)/);
+    console.log("Level 4 non-wrap + GAME_COMPLETE lock + reused reset/menu routes: PASS");
+
+    const pauseSource = read(path.join(repoRoot, "src", "PauseUI.ts"));
+    for (const [label, source] of [["BallController", ballSource], ["Main", mainSource], ["PauseUI", pauseSource]]) {
+        assert.doesNotMatch(source, /haptic|vibrat/i, `${label} retains death haptics`);
+    }
+    console.log("death haptics trigger, APIs, wiring, and Pause control removed: PASS");
+
     const changed = execFileSync("git", ["diff", "--name-only"], { cwd: repoRoot, encoding: "utf8" })
         .split(/\r?\n/)
         .filter(Boolean);
     assert.deepEqual([...changed].sort(), [
         "src/BallController.ts",
-        "src/IntroUI.ts",
+        "src/LevelTransition.ts",
         "src/Main.ts",
         "src/PauseUI.ts",
+        "src/ScoreManager.ts",
+        "src/TouchController.ts",
         "tools/verify-mobile-touch.cjs",
         "verify-pause.cjs",
-    ], "tracked diff escaped the PAUSE -> MAIN MENU writable allowlist");
+    ], "tracked diff escaped the player-feedback hotfix writable allowlist");
     assert.equal(changed.some((file) => /(?:^|\/)SfxManager\.ts$/.test(file)), false);
-    assert.equal(changed.some((file) => /^(?:src\/(?:TouchController|TouchTutorialUI|ScoreManager|LevelTransition|BgmManager|SfxManager)\.ts)$/.test(file)), false);
+    assert.equal(changed.some((file) => /^(?:src\/(?:TouchTutorialUI|BgmManager|SfxManager)\.ts)$/.test(file)), false);
+    assert.equal(fs.existsSync(path.join(repoRoot, "src", "GameCompleteUI.ts")), true,
+        "authorized GameCompleteUI.ts was not created");
     assert.equal(changed.includes("assets/Scene.ls"), false);
     assert.equal(changed.some((file) => /^tools\/(?:verify-l4|l4-.*(?:snapshot|baseline))/.test(file)), false);
-    console.log("world layout, protected touch/gameplay files, and L4 fixtures unchanged: PASS");
+    console.log("world layout, protected audio/tutorial files, and L4 fixtures unchanged: PASS");
 }
 
 runStateSmoke();

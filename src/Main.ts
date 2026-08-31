@@ -12,6 +12,7 @@ import { LevelTransition } from "./LevelTransition";
 import { PauseUI } from "./PauseUI";
 import { TouchController } from "./TouchController";
 import { TouchTutorialUI } from "./TouchTutorialUI";
+import { GameCompleteUI } from "./GameCompleteUI";
 
 @regClass()
 export class Main extends Laya.Script {
@@ -21,9 +22,14 @@ export class Main extends Laya.Script {
     private touchController: TouchController | null = null;
     private touchTutorial: TouchTutorialUI | null = null;
     private pauseUI: PauseUI | null = null;
+    private gameCompleteUI: GameCompleteUI | null = null;
     private gameStarted: boolean = false;
     private activeGameplay: boolean = false;
     private levelTransitionActive: boolean = false;
+    private completionFlowActive: boolean = false;
+    private gameCompleteActive: boolean = false;
+    private completionLevel: number = 0;
+    private completionScore: number = 0;
     private mobileTouchSession: boolean = false;
 
     // Main/session orchestration is the single authoritative Pause state owner.
@@ -72,16 +78,10 @@ export class Main extends Laya.Script {
             restartCurrentAttempt: () => this.restartCurrentAttemptFromPause(),
             returnToMainMenu: () => this.returnToMainMenuFromPause(),
             toggleMute: () => this.toggleGlobalMute(),
-            toggleHaptics: () => this.toggleDeathHaptics(),
             isMuted: () => SfxManager.isGlobalMuted(),
-            isHapticsEnabled: () => !!this.ballController?.isDeathHapticsEnabled(),
         });
 
-        ScoreManager.instance.setNextLevelHandler(() => {
-            if (this.ballController) {
-                this.ballController.advanceAfterWin();
-            }
-        });
+        ScoreManager.instance.setWinHandler((score: number) => this.handleLevelWon(score));
 
         IntroUI.show(
             () => this.acceptStartIntent(),
@@ -137,6 +137,7 @@ export class Main extends Laya.Script {
 
     private showLevelTransition(level: number, completion: () => void): void {
         this.cancelPendingPauseIntent();
+        ScoreManager.instance.clearTransientFeedback();
         this.levelTransitionActive = true;
         this.activeGameplay = false;
         this.touchController?.resetAll();
@@ -152,6 +153,8 @@ export class Main extends Laya.Script {
         if (!this.ballController) {
             return;
         }
+
+        this.playLevelHudEntrance();
 
         if (this.mobileTouchSession && this.touchController) {
             this.touchController.setGameplayActive(true);
@@ -173,7 +176,8 @@ export class Main extends Laya.Script {
     }
 
     private enableGameplay(): void {
-        if (!this.ballController || this.paused || this.levelTransitionActive) {
+        if (!this.ballController || this.paused || this.levelTransitionActive
+            || this.completionFlowActive || this.gameCompleteActive) {
             return;
         }
         this.activeGameplay = true;
@@ -183,12 +187,100 @@ export class Main extends Laya.Script {
         BgmManager.playGameplayBgm(this.mobileTouchSession);
     }
 
+    private playLevelHudEntrance(): void {
+        ScoreManager.instance.playLevelHudEntrance();
+        this.ballController?.playLevelHudEntrance();
+    }
+
+    private handleLevelWon(score: number): void {
+        if (!this.ballController || this.completionFlowActive || this.gameCompleteActive) return;
+
+        this.completionFlowActive = true;
+        this.completionLevel = this.ballController.getCurrentLevel();
+        this.completionScore = score;
+        this.activeGameplay = false;
+        this.cancelPendingPauseIntent();
+        this.touchController?.resetAll();
+        this.touchController?.setGameplayActive(false);
+        this.ballController.enabled = false;
+        this.syncPausePresentation();
+
+        // Keep the freshly spawned +1 visible before the full-screen completion state.
+        Laya.timer.once(320, this, this.presentLevelCompletion);
+    }
+
+    private presentLevelCompletion(): void {
+        const controller = this.ballController;
+        if (!controller || !this.completionFlowActive) return;
+
+        ScoreManager.instance.clearTransientFeedback();
+        if (this.completionLevel === controller.getMaxLevel()) {
+            this.gameCompleteActive = true;
+            this.gameCompleteUI?.destroy();
+            this.gameCompleteUI = new GameCompleteUI(
+                this.completionScore,
+                ScoreManager.instance.getWinScore(),
+                {
+                    playAgain: () => this.playAgainFromGameComplete(),
+                    returnToMainMenu: () => this.returnToMainMenuFromGameComplete(),
+                },
+            );
+            this.syncPausePresentation();
+            return;
+        }
+
+        this.levelTransitionActive = true;
+        const completedLevel = this.completionLevel;
+        const completedScore = this.completionScore;
+        LevelTransition.showClear(completedLevel, completedScore, completedLevel + 1, () => {
+            this.levelTransitionActive = false;
+            if (!this.ballController?.advanceAfterWin(false)) {
+                console.error("Automatic level advancement was rejected.");
+                this.completionFlowActive = false;
+                this.syncPausePresentation();
+                return;
+            }
+
+            this.completionFlowActive = false;
+            this.completionLevel = 0;
+            this.completionScore = 0;
+            this.playLevelHudEntrance();
+            this.enableGameplay();
+        });
+    }
+
+    private playAgainFromGameComplete(): void {
+        if (!this.gameCompleteActive || !this.ballController) return;
+
+        this.gameCompleteUI?.destroy();
+        this.gameCompleteUI = null;
+        this.gameCompleteActive = false;
+        this.completionFlowActive = false;
+        this.completionLevel = 0;
+        this.completionScore = 0;
+        this.paused = false;
+        this.activeGameplay = false;
+        this.gameStarted = true;
+        this.touchController?.resetAll();
+        this.touchController?.setGameplayActive(false);
+        this.ballController.resetRunToLevelOne();
+        this.ballController.enabled = false;
+        this.showLevelTransition(1, () => this.enterLevelOne());
+    }
+
+    private returnToMainMenuFromGameComplete(): void {
+        if (!this.gameCompleteActive || !this.ballController) return;
+        this.returnToMainMenu();
+    }
+
     /** Canonical session-owned test used by every Pause entry and final commit. */
     private canPauseNow(): boolean {
         return this.gameStarted
             && this.activeGameplay
             && !this.paused
             && !this.levelTransitionActive
+            && !this.completionFlowActive
+            && !this.gameCompleteActive
             && !this.touchTutorial
             && !!this.ballController
             && !ScoreManager.instance.isWon()
@@ -265,6 +357,21 @@ export class Main extends Laya.Script {
         if (!this.paused || !this.ballController) return;
         if (!this.pauseUI?.lockModalActions()) return;
 
+        this.returnToMainMenu();
+    }
+
+    private returnToMainMenu(): void {
+        if (!this.ballController) return;
+
+        Laya.timer.clear(this, this.presentLevelCompletion);
+        LevelTransition.cancel();
+        this.gameCompleteUI?.destroy();
+        this.gameCompleteUI = null;
+        this.gameCompleteActive = false;
+        this.completionFlowActive = false;
+        this.completionLevel = 0;
+        this.completionScore = 0;
+        ScoreManager.instance.clearTransientFeedback();
         this.touchController?.resetAll();
         this.touchController?.setGameplayActive(false);
         this.ballController.resetRunToLevelOne();
@@ -272,8 +379,9 @@ export class Main extends Laya.Script {
         this.paused = false;
         this.activeGameplay = false;
         this.gameStarted = false;
+        this.levelTransitionActive = false;
         this.cancelPendingPauseIntent();
-        this.pauseUI.hidePauseModal();
+        this.pauseUI?.hidePauseModal();
         IntroUI.returnToMainMenu(
             () => this.acceptStartIntent(),
             this.mobileTouchSession,
@@ -319,12 +427,6 @@ export class Main extends Laya.Script {
         SfxManager.setGlobalMuted(nextMuted);
         this.pauseUI?.refreshSettings();
         console.log("Muted:", nextMuted);
-    }
-
-    private toggleDeathHaptics(): void {
-        if (!this.mobileTouchSession || !this.ballController) return;
-        this.ballController.setDeathHapticsEnabled(!this.ballController.isDeathHapticsEnabled());
-        this.pauseUI?.refreshSettings();
     }
 
     private onGlobalKeyDown(event: any): void {
@@ -375,6 +477,8 @@ export class Main extends Laya.Script {
     }
 
     onDestroy(): void {
+        Laya.timer.clear(this, this.presentLevelCompletion);
+        LevelTransition.cancel();
         this.cancelPendingPauseIntent();
         this.unbindMobileBackgroundLifecycle();
         Laya.stage.off(Laya.Event.KEY_DOWN, this, this.onGlobalKeyDown);
@@ -382,8 +486,13 @@ export class Main extends Laya.Script {
         Laya.stage.off(Laya.Event.BLUR, this, this.onFocusLost);
         this.touchTutorial?.destroy();
         this.touchTutorial = null;
+        this.gameCompleteUI?.destroy();
+        this.gameCompleteUI = null;
         this.pauseUI?.destroy();
         this.pauseUI = null;
+        ScoreManager.instance.setWinHandler(null);
+        ScoreManager.instance.clearTransientFeedback();
+        ScoreManager.instance.finishLevelHudEntrance();
         if (this.ballController) {
             this.ballController.setTouchInputSource(null);
         }

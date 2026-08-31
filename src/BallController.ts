@@ -477,7 +477,7 @@ export default class BallController extends Laya.Script {
     // Pause is owned by Main. These fields only account for active-gameplay logical time.
     private activeGameplayPauseStartedAt: number | null = null;
     private activeGameplayPauseAccumulatedMs: number = 0;
-    private deathHapticsEnabled: boolean = false;
+    private levelHudEntranceCleanup: (() => void) | null = null;
     private visualLoopStarted: boolean = false;
     private static readonly PLATFORM_LANDING_IMPACT_DURATION_MS: number = 120;
     private static readonly PLATFORM_LANDING_IMPACT_MAX_Y: number = 3;
@@ -882,6 +882,14 @@ export default class BallController extends Laya.Script {
         this.levelTransitionHandler = handler;
     }
 
+    public getCurrentLevel(): number {
+        return this.currentLevel;
+    }
+
+    public getMaxLevel(): number {
+        return this.maxLevel;
+    }
+
     public setTouchInputSource(source: BallTouchInputSource | null): void {
         if (this.touchInput && this.touchInput !== source) {
             this.touchInput.setRuntimeBlockProvider(() => true);
@@ -917,14 +925,6 @@ export default class BallController extends Laya.Script {
 
     public synchronizeJumpInputBaseline(): void {
         this.prevJumpKey = this.isKeyDown(Laya.Keyboard.W) || this.isKeyDown(Laya.Keyboard.UP);
-    }
-
-    public setDeathHapticsEnabled(enabled: boolean): void {
-        this.deathHapticsEnabled = !!enabled;
-    }
-
-    public isDeathHapticsEnabled(): boolean {
-        return this.deathHapticsEnabled;
     }
 
     private beginLevelTransition(): void {
@@ -2594,9 +2594,9 @@ export default class BallController extends Laya.Script {
         this.isHandlingDeath = true;
         // This is V3 death-visual initialization, not ordinary post-death gameplay sync.
         this.captureFatalVisualPosition();
+        ScoreManager.instance.clearTransientFeedback();
         SfxManager.playDeath();
         this.startDeathFeedback();
-        this.triggerDeathHaptics();
 
         try {
             this.startDeathReconstruction();
@@ -2771,22 +2771,6 @@ export default class BallController extends Laya.Script {
         this.deathFragmentStartedAt = 0;
         this.deathFragments = [];
     }
-    private triggerDeathHaptics(): void {
-        if (!this.deathHapticsEnabled) return;
-        try {
-            const browserGlobal: any = typeof globalThis !== "undefined" ? globalThis : null;
-            const layaNavigator: any = Laya.Browser?.window?.navigator;
-            const navigatorObject = typeof layaNavigator?.vibrate === "function"
-                ? layaNavigator
-                : browserGlobal?.navigator;
-            if (typeof navigatorObject?.vibrate === "function") {
-                navigatorObject.vibrate.call(navigatorObject, 40);
-            }
-        } catch (_) {
-            // Haptics are best-effort and never participate in death semantics.
-        }
-    }
-
     private updateDeathFeedback(): void {
         const now = this.getWpBNow();
         this.updateScreenShake(now);
@@ -2920,29 +2904,31 @@ export default class BallController extends Laya.Script {
 
     // 胜利后进入下一关：复用 respawn() 的全部重置，再重新随机平台布局
     // 胜利后按 R 重开本局，并切换到下一关的随机平台布局
-    private restartGame(): void {
+    private restartGame(showTransition: boolean = true): boolean {
         console.log("Restart game");
+        if (this.currentLevel >= this.maxLevel) {
+            console.warn("Final level completion is owned by GAME_COMPLETE; wraparound blocked.");
+            return false;
+        }
         this.clearDeathReconstruction();
         this.clearDeathFeedback();
 
         this.currentLevel++;
-        if (this.currentLevel > this.maxLevel) {
-            this.currentLevel = 1;
-        }
 
         this.respawn();
         this.randomizePlatforms();
         this.randomizeHazards();
         this.updateLevelDifficultyBar();
-        this.beginLevelTransition();
+        if (showTransition) this.beginLevelTransition();
+        return true;
     }
 
-    public advanceAfterWin(): void {
+    public advanceAfterWin(showTransition: boolean = true): boolean {
         if (!ScoreManager.instance.isWon()) {
-            return;
+            return false;
         }
 
-        this.restartGame();
+        return this.restartGame(showTransition);
     }
 
     // 复用 SCORE HUD 的切角框与分段格语言，只展示四格成长进度。
@@ -2976,19 +2962,19 @@ export default class BallController extends Laya.Script {
         frame.graphics.drawLine(14, 0, 92, 0, "#35E9FF", 1.5);
         frame.graphics.drawLine(8, hudHeight - 1, 42, hudHeight - 1, "#7C4DFF", 1);
         frame.graphics.drawLine(hudWidth - 10, 4, hudWidth - 5, 9, "#35E9FF", 1);
-        frame.graphics.drawLine(58, 7, 58, hudHeight - 7, "#164B5A", 1);
+        frame.graphics.drawLine(62, 7, 62, hudHeight - 7, "#164B5A", 1);
         this.levelDifficultyHud.addChild(frame);
 
         const levelLabel = new Laya.Text();
         levelLabel.name = "WPH_LevelLabel";
-        levelLabel.text = "LEVEL";
+        levelLabel.text = "LEVEL " + this.currentLevel;
         levelLabel.font = "Arial";
-        levelLabel.fontSize = 14;
+        levelLabel.fontSize = 12;
         levelLabel.color = "#78D7E8";
         levelLabel.bold = true;
-        levelLabel.x = 14;
+        levelLabel.x = 8;
         levelLabel.y = 5;
-        levelLabel.width = 42;
+        levelLabel.width = 52;
         levelLabel.height = 30;
         levelLabel.align = "left";
         levelLabel.valign = "middle";
@@ -3037,6 +3023,8 @@ export default class BallController extends Laya.Script {
     private updateLevelDifficultyBar(): void {
         const palettes = BallController.BALL_ENERGY_CHECKPOINT_PALETTES;
         const romanNumerals = ["I", "II", "III", "IV"];
+        const levelLabel = this.levelDifficultyHud?.getChildByName?.("WPH_LevelLabel");
+        if (levelLabel) levelLabel.text = "LEVEL " + this.currentLevel;
 
         for (let i = 0; i < this.levelDifficultyCells.length; i++) {
             const cell = this.levelDifficultyCells[i];
@@ -3097,6 +3085,58 @@ export default class BallController extends Laya.Script {
                     growthProgress
                 );
             }
+        }
+    }
+
+    public playLevelHudEntrance(): void {
+        this.finishLevelHudEntrance();
+        const hud = this.levelDifficultyHud;
+        if (!hud) return;
+
+        hud.x = 10;
+        hud.alpha = 0;
+        const startedAt = Number.isFinite(Number(Laya.timer?.currTimer))
+            ? Number(Laya.timer.currTimer)
+            : Date.now();
+        let finished = false;
+        const update = (): void => {
+            if (finished || hud.destroyed) {
+                finish();
+                return;
+            }
+            const now = Number.isFinite(Number(Laya.timer?.currTimer))
+                ? Number(Laya.timer.currTimer)
+                : Date.now();
+            const normalized = Math.min(1, Math.max(0, now - startedAt) / 320);
+            const eased = 1 - Math.pow(1 - normalized, 3);
+            hud.x = 10 + 30 * eased;
+            hud.alpha = eased;
+            if (normalized >= 1) finish();
+        };
+        const finish = (): void => {
+            if (finished) return;
+            finished = true;
+            if (typeof Laya.timer?.clear === "function") Laya.timer.clear(hud, update);
+            hud.x = 40;
+            hud.alpha = 1;
+            if (this.levelHudEntranceCleanup === finish) this.levelHudEntranceCleanup = null;
+        };
+        this.levelHudEntranceCleanup = finish;
+        update();
+        if (typeof Laya.timer?.frameLoop === "function") {
+            Laya.timer.frameLoop(1, hud, update);
+        } else if (typeof Laya.timer?.once === "function") {
+            Laya.timer.once(320, hud, finish);
+        }
+    }
+
+    private finishLevelHudEntrance(): void {
+        const cleanup = this.levelHudEntranceCleanup;
+        this.levelHudEntranceCleanup = null;
+        if (cleanup) cleanup();
+        if (this.levelDifficultyHud) {
+            this.levelDifficultyHud.x = 40;
+            this.levelDifficultyHud.alpha = 1;
         }
     }
 
@@ -4880,6 +4920,8 @@ export default class BallController extends Laya.Script {
     }
 
     onDestroy(): void {
+        this.finishLevelHudEntrance();
+        ScoreManager.instance.clearTransientFeedback();
         if (this.touchInput) {
             this.touchInput.setRuntimeBlockProvider(() => true);
             this.touchInput.resetAll();

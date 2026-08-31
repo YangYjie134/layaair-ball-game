@@ -16,25 +16,25 @@ export const TOUCH_CONTROL_LAYOUT: Record<TouchControl, TouchControlLayout> = {
         visibleX: 56,
         visibleY: 558,
         visibleSize: 88,
-        hitX: 45,
-        hitY: 547,
-        hitSize: 110,
+        hitX: 32,
+        hitY: 542,
+        hitSize: 120,
     },
     right: {
         visibleX: 168,
         visibleY: 558,
         visibleSize: 88,
-        hitX: 157,
-        hitY: 547,
-        hitSize: 110,
+        hitX: 168,
+        hitY: 542,
+        hitSize: 120,
     },
     jump: {
         visibleX: 1174,
         visibleY: 548,
         visibleSize: 96,
-        hitX: 1154,
-        hitY: 528,
-        hitSize: 136,
+        hitX: 1147,
+        hitY: 521,
+        hitSize: 150,
     },
 };
 
@@ -113,8 +113,8 @@ export class TouchController {
     public static readonly STAGE_HEIGHT: number = 750;
     public static readonly DIRECTION_VISIBLE_SIZE: number = 88;
     public static readonly JUMP_VISIBLE_SIZE: number = 96;
-    public static readonly DIRECTION_HIT_SIZE: number = 110;
-    public static readonly JUMP_HIT_SIZE: number = 136;
+    public static readonly DIRECTION_HIT_SIZE: number = 120;
+    public static readonly JUMP_HIT_SIZE: number = 150;
     private static readonly PRESS_SPARK_COUNT: number = 3;
 
     private readonly state: TouchInputState = new TouchInputState();

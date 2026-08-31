@@ -224,9 +224,12 @@ function createMainFixture({ mobile = false, tutorial = false, failInitialCover 
     const browser = createLaya({ mobile });
     const { laya } = browser;
     const score = {
-        won: false, value: 0, mobile: null, nextLevelHandler: null, resetCount: 0,
+        won: false, value: 0, mobile: null, nextLevelHandler: null, winHandler: null, resetCount: 0,
         setMobileTouchSession(value) { this.mobile = value; }, init() {},
         setNextLevelHandler(handler) { this.nextLevelHandler = handler; },
+        setWinHandler(handler) { this.winHandler = handler; },
+        clearTransientFeedback() {}, playLevelHudEntrance() {}, finishLevelHudEntrance() {},
+        getWinScore() { return 5; },
         reset() { this.resetCount++; this.value = 0; this.won = false; },
         isWon() { return this.won; },
     };
@@ -247,7 +250,7 @@ function createMainFixture({ mobile = false, tutorial = false, failInitialCover 
             Object.assign(this, {
                 enabled: true, blocked: false, beginPauseCount: 0, finishPauseCount: 0,
                 rebaseCount: 0, restartCurrentCount: 0, resetRunCount: 0,
-                currentLevel: 3, haptics: false,
+                currentLevel: 3,
                 position: 10, velocity: 2, movingPlatformX: 20,
             });
         }
@@ -266,9 +269,10 @@ function createMainFixture({ mobile = false, tutorial = false, failInitialCover 
             this.velocity = 0;
             score.reset();
         }
-        setDeathHapticsEnabled(value) { this.haptics = !!value; }
-        isDeathHapticsEnabled() { return this.haptics; }
-        advanceAfterWin() {}
+        getCurrentLevel() { return this.currentLevel; }
+        getMaxLevel() { return 4; }
+        playLevelHudEntrance() {}
+        advanceAfterWin() { return true; }
         simulateEngineFrame() {
             if (!this.enabled) return;
             this.position += this.velocity;
@@ -348,7 +352,13 @@ function createMainFixture({ mobile = false, tutorial = false, failInitialCover 
         "./BgmManager": { BgmManager: bgm },
         "./SfxManager": { SfxManager: sfx },
         "./BallController": { default: FakeBall },
-        "./LevelTransition": { LevelTransition: { show(level, completion) { transitions.push({ level, completion }); } } },
+        "./LevelTransition": { LevelTransition: {
+            show(level, completion) { transitions.push({ level, completion }); },
+            showClear(level, scoreValue, nextLevel, completion) {
+                transitions.push({ level, scoreValue, nextLevel, completion });
+            },
+            cancel() {},
+        } },
         "./PauseUI": { PauseUI: StubPauseUI },
         "./TouchController": { TouchController: { create: () => touch, isTouchCapable: () => mobile } },
         "./TouchTutorialUI": { TouchTutorialUI: { showOnce: (completion) => {
@@ -356,6 +366,7 @@ function createMainFixture({ mobile = false, tutorial = false, failInitialCover 
             tutorialCompletion = completion;
             return { destroy() {} };
         } } },
+        "./GameCompleteUI": { GameCompleteUI: class { destroy() {} } },
     });
     const main = new Main();
     main.owner = { getChildByName: () => ({ getComponent: () => ball }) };
@@ -957,6 +968,7 @@ function loadBall({ withVibrate = true, navigatorSource = "laya" } = {}) {
         won: false, resetCount: 0,
         isWon() { return this.won; },
         reset() { this.resetCount++; this.won = false; },
+        clearTransientFeedback() {},
         addPlatformScore() {}, getScore() { return 0; },
     };
     const vibrations = [];
@@ -1043,7 +1055,7 @@ function testLogicalClockAndJump() {
     console.log("Pause-aware disappearing clock + keyboard jump rebase: PASS");
 }
 
-function testRestartAndHaptics() {
+function testRestartAndHapticsRemoved() {
     const restart = loadBall();
     const controller = restart.controller;
     controller.currentLevel = 3;
@@ -1069,22 +1081,11 @@ function testRestartAndHaptics() {
     haptics.controller.startDeathFeedback = () => {};
     haptics.controller.startDeathReconstruction = () => {};
     haptics.controller.handleDeath();
-    assert.deepEqual(haptics.vibrations, [], "default-OFF haptics vibrated");
-    haptics.controller.setDeathHapticsEnabled(true);
-    haptics.controller.handleDeath();
-    assert.deepEqual(haptics.vibrations, [40],
-        "opt-in real death path did not reach Laya.Browser.window.navigator.vibrate");
-    haptics.controller.setDeathHapticsEnabled(false);
-    haptics.controller.handleDeath();
-    assert.deepEqual(haptics.vibrations, [40], "OFF-again haptics vibrated");
-    const unsupported = loadBall({ withVibrate: false });
-    unsupported.controller.setDeathHapticsEnabled(true);
-    assert.doesNotThrow(() => unsupported.controller.triggerDeathHaptics());
-    const fallback = loadBall({ navigatorSource: "global" });
-    fallback.controller.setDeathHapticsEnabled(true);
-    fallback.controller.triggerDeathHaptics();
-    assert.deepEqual(fallback.vibrations, [40], "global navigator fallback did not vibrate");
-    console.log("current-level RESTART + browser-window opt-in death haptics + safe fallback: PASS");
+    assert.deepEqual(haptics.vibrations, [], "death path still vibrated");
+    assert.equal(typeof haptics.controller.triggerDeathHaptics, "undefined");
+    assert.equal(typeof haptics.controller.setDeathHapticsEnabled, "undefined");
+    assert.equal(typeof haptics.controller.isDeathHapticsEnabled, "undefined");
+    console.log("current-level RESTART + death haptics fully removed: PASS");
 }
 
 function testFreshLevelOneReset() {
@@ -1160,7 +1161,6 @@ function testPauseUi() {
     const mobileLaya = createLaya({ mobile: true }).laya;
     const { PauseUI } = loadTs("src/PauseUI.ts", mobileLaya);
     let muted = false;
-    let haptics = false;
     let requests = 0;
     let resumes = 0;
     let restarts = 0;
@@ -1175,8 +1175,7 @@ function testPauseUi() {
             ui.lockModalActions();
         },
         toggleMute: () => { muted = !muted; },
-        toggleHaptics: () => { haptics = !haptics; },
-        isMuted: () => muted, isHapticsEnabled: () => haptics,
+        isMuted: () => muted,
     };
     ui = new PauseUI(true, actions);
     const pauseButton = findNode(mobileLaya.stage, "PauseUI_PauseButton");
@@ -1209,32 +1208,29 @@ function testPauseUi() {
     assert.equal(modal.zOrder, 10004);
     const mobilePanel = findNode(modal, "PauseUI_Panel");
     assert.ok(mobilePanel);
-    assert.equal(mobilePanel.height, 576);
+    assert.equal(mobilePanel.height, 500);
     const mobileButtons = mobilePanel.children.filter((child) => child.pauseButtonModel);
     assert.deepEqual(
         mobileButtons.map((button) => button.pauseButtonModel.action),
-        ["RESUME", "RESTART", "MAIN_MENU", "MUTE", "HAPTICS"],
+        ["RESUME", "RESTART", "MAIN_MENU", "MUTE"],
     );
-    assert.deepEqual(mobileButtons.map((button) => button.y), [142, 212, 282, 352, 422]);
+    assert.deepEqual(mobileButtons.map((button) => button.y), [142, 212, 282, 352]);
     const resumeButton = findNode(modal, "PauseUI_RESUME");
     const restartButton = findNode(modal, "PauseUI_RESTART");
     const mainMenuButton = findNode(modal, "PauseUI_MAIN_MENU");
     const mute = findNode(modal, "PauseUI_MUTE");
-    const haptic = findNode(modal, "PauseUI_HAPTICS");
-    assert.ok(resumeButton && restartButton && mainMenuButton && mute && haptic,
+    assert.ok(resumeButton && restartButton && mainMenuButton && mute,
         "mobile Pause actions are incomplete");
+    assert.equal(findNode(modal, "PauseUI_HAPTICS"), null, "removed Haptics control is still mounted");
     assert.equal(mainMenuButton.pauseButtonModel.kind, "SECONDARY");
     assert.equal(mainMenuButton.height, 56);
     resumeButton.emit(mobileLaya.Event.CLICK);
     restartButton.emit(mobileLaya.Event.CLICK);
     mute.emit(mobileLaya.Event.CLICK);
-    haptic.emit(mobileLaya.Event.CLICK);
     assert.equal(resumes, 1);
     assert.equal(restarts, 1);
     assert.equal(muted, true);
-    assert.equal(haptics, true);
     assert.equal(mute.children[1].children[0].text, "MUTE: ON");
-    assert.equal(haptic.children[1].children[0].text, "HAPTICS: ON");
     mainMenuButton.emit(mobileLaya.Event.CLICK);
     mainMenuButton.emit(mobileLaya.Event.CLICK);
     assert.equal(mainMenuReturns, 1, "modal lock allowed duplicate MAIN MENU activation");
@@ -1270,7 +1266,7 @@ function testPauseUi() {
     assert.ok(collectTexts(desktopModal).some((text) => text.includes("P  RESUME")));
     assert.equal(collectTexts(desktopModal).some((text) => text.includes("ESC")), false,
         "desktop Pause modal still teaches ESC Resume");
-    console.log("desktop/mobile Pause layout/order + MAIN MENU lock + unchanged settings actions: PASS");
+    console.log("desktop/mobile Pause layout/order + MAIN MENU lock + Haptics control removed: PASS");
 }
 
 function testStaticContracts() {
@@ -1357,12 +1353,9 @@ function testStaticContracts() {
     assert.doesNotMatch(pause, /globalMuted|setGlobalMuted|BgmManager|AudioContext|suspend\(/);
     assert.doesNotMatch(resume, /BgmManager|playBgm/);
     assert.doesNotMatch(commit, /BgmManager|playBgm/);
-    assert.match(ball, /private deathHapticsEnabled:\s*boolean\s*=\s*false/);
-    assert.match(ball,
-        /if \(!this\.deathHapticsEnabled\) return;[\s\S]*?Laya\.Browser\?\.window\?\.navigator[\s\S]*?navigatorObject\.vibrate\.call\(navigatorObject, 40\)/);
-    assert.equal((between(ball,
-        "    private handleDeath(): void",
-        "    private startDeathFeedback(): void").match(/triggerDeathHaptics\(\)/g) || []).length, 1);
+    assert.doesNotMatch(ball, /deathHaptics|triggerDeathHaptics|navigatorObject\.vibrate|\.vibrate\.call/i);
+    assert.doesNotMatch(main, /toggleDeathHaptics|isDeathHapticsEnabled|setDeathHapticsEnabled/i);
+    assert.doesNotMatch(pause, /HAPTICS|toggleHaptics|isHapticsEnabled/i);
     assert.doesNotMatch(ball, /localStorage|sessionStorage|document\.cookie/);
 
     const freshRunReset = between(ball,
@@ -1415,8 +1408,8 @@ function testStaticContracts() {
     assert.match(pause, /PAUSE_BUTTON_Z:\s*number\s*=\s*10000/);
     assert.match(pause, /PAUSE_MODAL_Z:\s*number\s*=\s*10004/);
     assert.match(pause, /returnToMainMenu\(\): void/);
-    assert.match(pause, /"RESUME" \| "RESTART" \| "MAIN_MENU" \| "MUTE" \| "HAPTICS"/);
-    assert.match(pause, /const panelHeight = this\.mobileTouchSession \? 576 : 500/);
+    assert.match(pause, /"RESUME" \| "RESTART" \| "MAIN_MENU" \| "MUTE"/);
+    assert.match(pause, /const panelHeight = 500/);
     assert.match(pause,
         /createModalButton\("MAIN MENU", "MAIN_MENU", "SECONDARY", buttonWidth, buttonHeight\)/);
     assert.match(pause,
@@ -1479,7 +1472,7 @@ testFreezeTouchAndLatch();
 testReturnToMainMenuLifecycle();
 testMobileBackgroundAutoPause();
 testLogicalClockAndJump();
-testRestartAndHaptics();
+testRestartAndHapticsRemoved();
 testFreshLevelOneReset();
 testPauseUi();
 console.log("pause verification: PASS");
