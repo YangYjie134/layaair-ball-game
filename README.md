@@ -1,184 +1,131 @@
 # LayaAir Ball Game
 
-> Personal project / 个人项目 | Independently developed / 独立开发
+> A completed four-level cyber platformer built with **LayaAir 3** and **TypeScript**, combining custom one-way physics, progressive hazards, responsive feedback, and reproducible validation tooling.
 
-![BallGame gameplay flow: core movement, special platforms, and level clear](docs/showcase/gameplay-preview.gif)
+![Ball Game Cyber Core Trial cover](docs/showcase/ballgame-cover-final.png)
 
-*Gameplay flow preview assembled from captured in-game states: core gameplay, special platforms, and level clear.*
+**Status:** Feature-complete personal portfolio build with a full start-to-finish game flow.
 
-A completed four-level 2D platformer personal project built with **LayaAir 3** and **TypeScript**.
+### Watch and Play
 
-This is a finished learning and portfolio project, not a commercial release. It focuses on custom platformer physics, readable gameplay rules, randomized platform layouts, and a compact four-level game loop.
+- **Play Online:** [Play the final Web build](https://yangyjie134.github.io/layaair-ball-game/)
+- **Full Gameplay & Features (3:50):** [Watch the complete gameplay and feature walkthrough](https://github.com/YangYjie134/layaair-ball-game/releases/download/web-demo-2026-09-03/BallGame-Full-Gameplay-Features-Final.mp4)
+- **Short Gameplay Preview (53 sec):** [Watch the representative final-build capture](docs/showcase/ballgame-final-portfolio-capture.mp4)
+- **Latest Release:** [Download the final Web build](https://github.com/YangYjie134/layaair-ball-game/releases/tag/web-demo-2026-09-03)
 
-## Project Summary
 
-The player controls a ball, jumps through platform layouts, scores by landing on platforms, and advances through four completed level rule sets. Later levels add moving platforms, disappearing platforms, and static spike hazards while keeping the core controls simple.
+## Game Overview
 
-The project currently uses code-driven gameplay logic and a code-drawn background rather than relying only on scene-editor behavior.
+Ball Game — Cyber Core Trial is a compact 2D platformer about guiding an energy core through four escalating simulation sectors. The player earns one point for each unique platform landing; five points clear the current level. Levels 1–3 advance through dedicated transitions, while Level 4 ends at a complete Game Complete screen with **Play Again** and **Main Menu** actions.
 
-Requirements, technical decisions, code integration, debugging, verification, and final acceptance were handled independently; AI tools were used as development assistants.
+| | |
+| --- | --- |
+| Engine | LayaAir 3 |
+| Language | TypeScript |
+| Genre | 2D platformer |
+| Scope | Four completed levels plus final completion flow |
+| Platforms | Desktop keyboard and mobile touch |
+| Role | Independently owned personal portfolio project |
+
+## Core Features
+
+- Cyber Cover initialization, main menu, physical-key control test, and mobile tutorial.
+- Horizontal movement, jumping, scoring, level transitions, and core-energy feedback.
+- Moving platforms, warned disappearing platforms with hide/rebuild states, and Level 4 spike hazards.
+- Cyber death-reconstruction sequence followed by a clean gameplay rebuild.
+- Pause, restart, main-menu, and global mute controls.
+- Separate Cover, Menu, and Gameplay music roles with jump, score, death, and clear feedback.
+- Dedicated final completion UI after all four levels.
+
+## Gameplay and Presentation
 
 <p align="center">
-  <img src="docs/showcase/level-4-hazards.webp" alt="Level 4 moving, disappearing, and spike hazards" width="49%">
-  <img src="docs/showcase/level-complete.webp" alt="Level complete interface at Score 5" width="49%">
+  <img src="docs/showcase/ballgame-menu-final.png" alt="Ball Game Cyber Core Trial main menu with Start Game and Control Test actions" width="49%">
+  <img src="docs/showcase/ballgame-gameplay-final.png" alt="Ball Game Level 1 gameplay with score, level, platform, and pause HUD elements" width="49%">
 </p>
 
-## Play Online
+<p align="center">
+  <img src="docs/showcase/ballgame-pause-final.png" alt="Ball Game pause menu with Resume, Restart, Main Menu, and Mute controls" width="72%">
+</p>
 
-- **Browser demo:** [Play LayaAir Ball Game](https://yangyjie134.github.io/layaair-ball-game/)
-- **Downloadable Web build:** [Latest GitHub Release](https://github.com/YangYjie134/layaair-ball-game/releases/latest)
+The visual flow stays consistent from the hold-to-initialize Cover through menus, level-ready and level-clear transitions, gameplay feedback, reconstruction, pause controls, and the final completion state.
 
-After the page loads, Cover music is requested immediately on a best-effort basis. Hold `Enter` or the left mouse button for about 1.2 seconds to initialize the desktop title cover; on mobile, touch and hold. If browser autoplay blocks the entry-time request, the first valid interaction retries it without blocking initialization.
+## Technical Highlights
 
-## Current Status
-
-- **Engine:** LayaAir 3
-- **Language:** TypeScript
-- **Genre:** 2D platformer
-- **Current level loop:** Level 1 through Level 4, then loops back
-- **Completed scope:** movement, jumping, collision, death / respawn, randomized layouts, special platforms, Level 4 hazards, and audio
-- **Project stage:** completed learning / portfolio project
-- **Development model:** personal project / independently developed
-
-## Features
-
-- Custom ball movement with gravity, horizontal acceleration, and jumping.
-- Custom one-way platform collision for simple and controllable platformer behavior.
-- Platform scoring with one score per platform touch.
-- Death and respawn loop after falling back to danger areas or leaving the playable space.
-- Randomized platform layouts after death and level reset.
-- Moving platforms in later levels.
-- Disappearing platforms with brighter warning colors and a visual highlight bar.
-- Static spike hazards in Level 4.
-- Hold-to-initialize title cover, main menu, and desktop/mobile control guides.
-- Code-drawn background.
-- Desktop/Mobile-optimized Cover and main-menu music, with the existing silent How to Play, startup transition, and first-use mobile tutorial lifecycle before gameplay music begins.
-- Sound effects for jump, death, and level-clear.
-- Global mute toggle for music and sound effects.
+- **LayaAir 3 + TypeScript:** gameplay, UI orchestration, audio roles, and presentation systems remain explicit and code-readable.
+- **Purpose-built one-way platform physics:** the ball lands on platform tops while side and underside contacts remain non-blocking.
+- **Constrained randomized Level 4 generation:** platform and hazard placement follows explicit rules instead of unconstrained random placement.
+- **Deterministic seed replay:** recorded seeds make selected randomized cases reproducible for investigation.
+- **Production-step validation:** targeted tools exercise the same `BallController.stepPhysics(...)` path used by runtime gameplay.
+- **Authoritative session flow:** `Main.ts` owns intro, active play, pause, transitions, and completion; UI layers remain presentation-focused.
 
 ## Controls
 
-| Action | Input |
+| Action | Desktop | Mobile |
+| --- | --- | --- |
+| Move | `A` / `D` or left / right arrows | Left / right touch controls |
+| Jump | `W` or up arrow | Jump touch control |
+| Pause / resume | `P` or top-right Pause button | Top-right Pause button |
+| Restart current level | Pause menu | Pause menu |
+| Mute / unmute | `M` or Pause menu | Pause menu |
+| Initialize Cover | Hold `Enter` or the left mouse button | Touch and hold |
+
+## Level Overview
+
+| Level | Player-facing progression |
 | --- | --- |
-| Move left / right | `A` / `D` or left / right arrow |
-| Jump | `W` or up arrow |
-| Advance after win | `R` |
-| Initialize title cover (desktop) | Hold `Enter` or hold left mouse |
-| Initialize title cover (mobile) | Touch and hold |
-| Mute / unmute all audio | `M` |
-| Pause / resume during active gameplay | `P` or the top-right Pause control |
-
-## Audio Credits
-
-All audio is CC0 (public domain). Attribution is not legally required under CC0, but
-is provided here as good practice. See `assets/AUDIO_SOURCES.md` for per-file roles,
-authors, source pages, licenses, and actual processing details.
-
-* **Cover / main-menu music** — `transmission.mp3` and `sector.mp3`, by SRG774, from *Dark Sci-Fi Audio Pack*
-  * https://opengameart.org/content/dark-sci-fi-audio-pack  (CC0 1.0)
-* **Gameplay music** — "Ending / Credits", by Juhani Junkala / SubspaceAudio, from *5 Chiptunes (Action)*
-  * https://opengameart.org/content/5-chiptunes-action  (CC0)
-* **Sound effects** (jump / death / level-clear) — from *512 Sound Effects (8-bit style)*
-  * https://opengameart.org/content/512-sound-effects-8-bit-style  (CC0)
-
-## Level Design
-
-| Level | Main Mechanics |
-| --- | --- |
-| Level 1 | Basic platform jumping |
+| Level 1 | Core movement, jumping, landing, and scoring |
 | Level 2 | Moving platforms |
-| Level 3 | Moving platforms and disappearing platforms |
-| Level 4 | Moving platforms, disappearing platforms, and static spike hazards |
+| Level 3 | Moving platforms plus warned disappearing platforms and rebuild behavior |
+| Level 4 | Moving platforms, disappearing platforms, spike hazards, and final completion |
 
-Current platform and hazard rules:
+## Advanced Validation Notes
 
-- Platform layouts are randomized as part of the restart / respawn loop.
-- Spikes can appear on `Platform_1` through `Platform_5`.
-- Spikes do not appear on `Ground`, moving platforms, or disappearing platforms.
-- Disappearing platforms are not selected from the final platform.
-- Disappearing platforms warn the player with brighter colors and a highlight bar before becoming inactive.
+Level 4 support combines constrained generation, deterministic seed replay, affected-jump identification, and targeted validation through the production physics step. These tools are used to reproduce and investigate selected layouts; they do not claim mathematical proof of fairness or universal solvability.
 
-## Technical Notes
+Historical manual acceptance is deliberately finite. An initial 30-layout sample completed 29 layouts normally, with one potentially unreachable result that could not be reproduced. A targeted follow-up covered 10 additional valid samples: eight completed normally and two ended after spike collisions, with no new potentially unreachable layout observed. No confirmed unreachable layout was found in those samples.
 
-The game uses self-developed lightweight one-way platform physics instead of relying fully on Box2D contacts for platform behavior. This keeps the rules focused on the platformer use case: the ball lands on platform tops, but platform sides and bottom contacts do not need full rigid-body handling.
+## Project Ownership
 
-That direction was chosen after unstable platform-corner behavior made the built-in physics path harder to control for this prototype. The custom approach keeps collision rules, respawn behavior, and level reset behavior easier to reason about.
+This is a personal portfolio project developed with AI-assisted implementation and review. Requirements, technical trade-offs, integration, debugging, verification, and final acceptance were owned by the developer.
 
-Per-frame gameplay physics is exposed through the shared production `BallController.stepPhysics(...)` step. Runtime gameplay and the Level 4 validation harness use this same production physics path rather than maintaining a separate copy of the movement and collision model.
+## Run Locally
 
-Important runtime systems include:
+1. Open the repository folder in **LayaAir IDE 3**.
+2. Run the main scene from the editor.
+3. Hold `Enter` or the left mouse button for about 1.2 seconds to initialize the Cover.
 
-- `BallController.ts` for movement, platform collision, level progression, hazards, respawn, and platform randomization.
-- `ScoreManager.ts` for score tracking, win state, and platform score deduplication.
-- `BackgroundManager.ts` for the code-drawn background.
-- `IntroUI.ts` for the startup controls overlay.
-- `BgmManager.ts` for background-music start / stop and volume.
-- `SfxManager.ts` for jump, death, and level-clear sound effects.
+For a downloaded Web build, extract the package and serve it through a local HTTP server instead of opening `index.html` with `file://`.
 
-## Level 4 Validation
+`package.json` does not define npm run scripts, so commands such as `npm run dev` or `npm start` are intentionally not documented.
 
-Level 4's randomized layouts are supported by deterministic Seed Replay, affected-jump identification, and a validation harness that replays cases through the real production `stepPhysics` path. Together, these tools make generated layouts reproducible and keep offline checks tied to the game's production physics.
+Browser autoplay rules may defer Cover music until the first valid interaction. The Cover gesture retries playback while continuing the initialization flow.
 
-Manual acceptance evidence for the completed build is deliberately reported as a finite sample:
-
-- Initial 30 randomized layouts: 29 completed normally; 1 appeared potentially unreachable but could not be reproduced.
-- Follow-up testing targeted similar high-risk geometry with 10 additional valid samples: 8 completed normally; 2 ended after spike collisions, so their reachability remained undetermined; 0 new potentially unreachable layouts were observed.
-- Across these finite samples, no confirmed unreachable randomized layout was found.
-
-This is **not** a complete mathematical proof of reachability or fairness and should not be read as a guarantee covering every possible randomized layout.
-
-## Project Structure
+## Key Runtime Files
 
 ```text
 src/
-├── Main.ts                # Entry point for startup systems
-├── BallController.ts      # Core player, platform, level, respawn, and hazard logic
-├── ScoreManager.ts        # Score and win-state management
-├── BackgroundManager.ts   # Code-drawn background
-├── IntroUI.ts             # Title-cover Hold flow, main menu, and control guides
-├── BgmManager.ts          # Cover / menu / gameplay music roles and playback
-└── SfxManager.ts          # Jump, death, and level-clear sound effects
+├── Main.ts                 # Session flow, pause, transitions, and completion
+├── BallController.ts       # Movement, collision, levels, hazards, and respawn
+├── ScoreManager.ts         # Score state and player feedback
+├── IntroUI.ts              # Cover, menu, control test, and tutorial entry
+├── LevelTransition.ts      # Level-ready and level-clear presentation
+├── GameCompleteUI.ts       # Final completion actions
+├── PauseUI.ts              # Pause presentation and callbacks
+├── TouchController.ts      # Mobile gameplay controls
+├── TouchTutorialUI.ts      # Mobile onboarding flow
+├── BgmManager.ts           # Cover, Menu, and Gameplay music roles
+└── SfxManager.ts           # Sampled effects and procedural score feedback
 ```
 
-## How to Run
+## Audio, Credits, and Licensing
 
-1. Open the repository folder with **LayaAir IDE 3**.
-2. Run the main scene from the editor.
-3. Hold `Enter` or the left mouse button to initialize the title cover, then use the controls listed above.
+The final presentation uses multi-stage background music plus jump, score, death, and clear feedback, with a global mute control. Detailed source, license, role, and processing records are kept in [`assets/AUDIO_SOURCES.md`](assets/AUDIO_SOURCES.md).
 
-For the downloadable Web build, extract the Release archive and use a local HTTP server rather than opening it with `file://`. The hosted GitHub Pages build is linked in **Play Online** above.
+No project-wide license is declared. Third-party engine, template, Box2D, and audio notices are documented in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md); that notice does not grant permission to reuse the project's original code, documentation, screenshots, or game design.
 
-`package.json` currently does not define npm scripts, so this README intentionally does not document `npm run dev`, `npm start`, or similar commands.
+## 中文简介
 
-## Development Notes
+**Ball Game — Cyber Core Trial** 是一个使用 **LayaAir 3 + TypeScript** 独立完成的四关赛博风格 2D 平台跳跃作品。玩家通过自定义单向平台物理完成跳跃与落点得分，四关依次加入移动平台、消失平台和尖刺，并由独立的最终通关界面收束完整流程。
 
-- The project is intentionally small and code-readable.
-- The intended four-level gameplay, hazard, audio, respawn, and validation scope is complete.
-- The current architecture favors explicit TypeScript gameplay logic over broad engine abstraction.
-- Respawn, platform reset, and randomized layout behavior are core parts of the game loop.
-
-## Known Limitations
-
-- Cover music is requested on Cover entry, but browser autoplay policy may defer it until the first valid interaction.
-- The hosted and downloadable builds are portfolio Web demos, not commercial or store releases.
-
-## Licensing
-
-No project-wide license is currently declared. Third-party engine files, LayaAir template assets, Box2D code present in generated output, and CC0 audio are documented separately in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). That notice does not grant permission to reuse the project's original code, documentation, screenshots, or game design.
-
-## Optional Future Polish
-
-The current project scope is complete. Possible future additions are optional rather than required for the finished four-level build:
-
-- UI polish.
-- More level variety.
-- Difficulty balancing.
-- Better visual feedback.
-
-## 中文简要说明
-
-这是一个使用 **LayaAir 3 + TypeScript** 制作并已完成的四关 2D 小球平台跳跃项目，定位是学习和作品集展示项目，而不是商业化成品。
-
-当前已经实现 Level 1 到 Level 4 的循环玩法，包括基础跳跃、移动平台、消失平台、静态尖刺、死亡复活、平台随机刷新、开场操作提示和代码绘制背景。音频方面已加入背景音乐、跳跃/死亡/过关音效，以及 M 键全局静音。项目重点是用自定义单向平台物理来保持平台跳跃规则简单、可控，并方便继续扩展关卡机制。
-
-工程侧使用自研轻量物理与共享 production `stepPhysics`，并配套 deterministic Seed Replay、affected-jump identification 和基于真实 production physics 的 validation harness。L4 验收结论来自有限样本，不构成完备的可达性或公平性数学证明。
+当前版本包含 Cyber Cover、主菜单、实体按键测试、桌面与移动端输入、关卡转场、Pause、分数与核心能量反馈、死亡重构、分阶段音乐和音效。Level 4 配套受约束的随机生成、确定性 Seed Replay 与基于 production `stepPhysics(...)` 的定向验证工具。
